@@ -1,0 +1,204 @@
+<script setup lang="ts">
+import { onBeforeUnmount, onMounted, ref } from 'vue'
+import type { QualityLevel, Settings } from '../game/core/settings'
+
+// settings 是父層的 reactive 物件，直接修改即可（由父層 watch 儲存並套用）。
+const props = defineProps<{ settings: Settings; activeQuality: QualityLevel }>()
+const emit = defineEmits<{ close: [] }>()
+
+const dialog = ref<HTMLElement | null>(null)
+const qualityLabels: Record<QualityLevel, string> = { low: '省電', medium: '標準', high: '高畫質' }
+
+const volumeFields = [
+  { key: 'masterVolume', label: '總音量' },
+  { key: 'musicVolume', label: '環境與音樂' },
+  { key: 'sfxVolume', label: '音效' },
+] as const
+
+function onKey(e: KeyboardEvent) {
+  if (e.key === 'Escape') emit('close')
+}
+
+onMounted(() => {
+  window.addEventListener('keydown', onKey)
+  dialog.value?.focus()
+})
+onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
+
+const s = props.settings
+</script>
+
+<template>
+  <div class="backdrop" @click.self="emit('close')">
+    <section ref="dialog" class="sheet" role="dialog" aria-modal="true" aria-labelledby="settings-title" tabindex="-1">
+      <header>
+        <h2 id="settings-title">設定</h2>
+        <button class="icon-btn" type="button" aria-label="關閉設定" @click="emit('close')">✕</button>
+      </header>
+
+      <fieldset>
+        <legend>畫質</legend>
+        <div class="segmented" role="radiogroup" aria-label="畫質">
+          <label v-for="q in (['auto', 'low', 'medium', 'high'] as const)" :key="q">
+            <input v-model="s.quality" type="radio" name="quality" :value="q" />
+            <span>{{ q === 'auto' ? `自動（${qualityLabels[activeQuality]}）` : qualityLabels[q] }}</span>
+          </label>
+        </div>
+        <p class="note">手機發熱或耗電明顯時，請改用「省電」。抗鋸齒變更於重新整理後生效。</p>
+      </fieldset>
+
+      <fieldset>
+        <legend>聲音</legend>
+        <label v-for="f in volumeFields" :key="f.key" class="slider">
+          <span>{{ f.label }}</span>
+          <input v-model.number="s[f.key]" type="range" min="0" max="1" step="0.05" />
+          <output>{{ Math.round(s[f.key] * 100) }}</output>
+        </label>
+        <label class="toggle">
+          <input v-model="s.muted" type="checkbox" />
+          <span>靜音</span>
+        </label>
+      </fieldset>
+
+      <fieldset>
+        <legend>其他</legend>
+        <label class="toggle">
+          <input v-model="s.showStats" type="checkbox" />
+          <span>顯示效能資訊</span>
+        </label>
+      </fieldset>
+    </section>
+  </div>
+</template>
+
+<style scoped>
+.backdrop {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgba(10, 11, 14, 0.4);
+}
+
+.sheet {
+  width: min(420px, 100%);
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
+  padding: 20px;
+  background: var(--panel-strong);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  outline: none;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+h2 {
+  margin: 0;
+  font-family: var(--font-title);
+  font-weight: 600;
+  letter-spacing: 0.2em;
+}
+
+fieldset {
+  margin: 0;
+  padding: 14px 0;
+  border: 0;
+  border-top: 1px solid var(--line);
+}
+
+legend {
+  padding: 0 0 10px;
+  font-size: 0.8rem;
+  letter-spacing: 0.2em;
+  color: var(--accent);
+}
+
+.segmented {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px;
+}
+
+.segmented label {
+  position: relative;
+}
+
+.segmented input {
+  position: absolute;
+  opacity: 0;
+}
+
+.segmented span {
+  display: grid;
+  place-items: center;
+  min-height: 44px;
+  padding: 6px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  font-size: 0.88rem;
+  text-align: center;
+  cursor: pointer;
+}
+
+.segmented input:checked + span {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+
+.segmented input:focus-visible + span {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.note {
+  margin: 10px 0 0;
+  font-size: 0.78rem;
+  line-height: 1.6;
+  color: var(--ink-faint);
+}
+
+.slider {
+  display: grid;
+  grid-template-columns: 5.5em 1fr 2.5em;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  font-size: 0.9rem;
+}
+
+.slider input {
+  width: 100%;
+  accent-color: var(--accent);
+}
+
+.slider output {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-soft);
+}
+
+.toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.toggle input {
+  width: 20px;
+  height: 20px;
+  accent-color: var(--accent);
+}
+</style>

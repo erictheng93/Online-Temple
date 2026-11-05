@@ -1,0 +1,112 @@
+/**
+ * 前端與 Rust 伺服器之間的訊息格式草案（協定版本 1）。
+ *
+ * 目前使用 JSON 以便除錯；編碼集中在 encode()/decode()，之後改二進位只需替換這兩個函式。
+ * 後端尚未實作，欄位以伺服器定案為準。
+ *
+ * 語意分類：
+ * - 可取代：move/stop。尚未送出的舊位置可被新位置覆蓋。
+ * - 需確認：action。帶 reqId，伺服器以 reqId 去重並回 ack，重試不會重複執行。
+ */
+
+export const PROTOCOL_VERSION = 1
+/** 單則訊息上限（bytes）。超過即丟棄，伺服器端也應設相同上限。 */
+export const MAX_MESSAGE_BYTES = 16 * 1024
+
+export interface PlayerSnapshot {
+  id: string
+  name: string
+  x: number
+  z: number
+  /** 面向角度（弧度）。 */
+  heading: number
+  /** 玩家目前正在進行的動作，沒有則省略。 */
+  action?: { id: string; startedAt: number }
+}
+
+export type ClientMessage =
+  | { t: 'hello'; v: number; name: string; resumeToken?: string }
+  | { t: 'move'; x: number; z: number; heading: number; seq: number }
+  | { t: 'stop'; x: number; z: number; heading: number; seq: number }
+  | { t: 'action'; reqId: string; id: string; data?: Record<string, unknown> }
+  | { t: 'ping'; ts: number }
+
+export type ServerMessage =
+  | {
+      t: 'welcome'
+      selfId: string
+      room: string
+      resumeToken: string
+      serverTime: number
+      players: PlayerSnapshot[]
+    }
+  | { t: 'join'; player: PlayerSnapshot }
+  | { t: 'leave'; id: string }
+  | { t: 'move'; id: string; x: number; z: number; heading: number; moving: boolean }
+  | { t: 'action'; playerId: string; id: string; startedAt: number; data?: Record<string, unknown> }
+  | { t: 'ack'; reqId: string; ok: boolean; reason?: string }
+  | { t: 'pong'; ts: number; serverTime: number }
+  | { t: 'error'; code: string; message: string }
+
+export function encode(msg: ClientMessage): string {
+  return JSON.stringify(msg)
+}
+
+const isObj = (v: unknown): v is Record<string, unknown> =>
+  typeof v === 'object' && v !== null && !Array.isArray(v)
+const isStr = (v: unknown): v is string => typeof v === 'string' && v.length <= 256
+const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v)
+
+function isPlayer(v: unknown): v is PlayerSnapshot {
+  if (!isObj(v)) return false
+  if (!isStr(v.id) || !isStr(v.name) || !isNum(v.x) || !isNum(v.z) || !isNum(v.heading)) return false
+  if (v.action === undefined) return true
+  return isObj(v.action) && isStr(v.action.id) && isNum(v.action.startedAt)
+}
+
+/**
+ * 解析伺服器訊息。格式不符、過大或未知類型時回傳 null，呼叫端直接忽略，不讓壞資料進入遊戲狀態。
+ */
+export function decode(raw: unknown): ServerMessage | null {
+  if (typeof raw !== 'string' || raw.length > MAX_MESSAGE_BYTES) return null
+  let m: unknown
+  try {
+    m = JSON.parse(raw)
+  } catch {
+    return null
+  }
+  if (!isObj(m)) return null
+  switch (m.t) {
+    case 'welcome':
+      return isStr(m.selfId) &&
+        isStr(m.room) &&
+        isStr(m.resumeToken) &&
+        isNum(m.serverTime) &&
+        Array.isArray(m.players) &&
+        m.players.every(isPlayer)
+        ? (m as ServerMessage)
+        : null
+    case 'join':
+      return isPlayer(m.player) ? (m as ServerMessage) : null
+    case 'leave':
+      return isStr(m.id) ? (m as ServerMessage) : null
+    case 'move':
+      return isStr(m.id) && isNum(m.x) && isNum(m.z) && isNum(m.heading) && typeof m.moving === 'boolean'
+        ? (m as ServerMessage)
+        : null
+    case 'action':
+      return isStr(m.playerId) && isStr(m.id) && isNum(m.startedAt) && (m.data === undefined || isObj(m.data))
+        ? (m as ServerMessage)
+        : null
+    case 'ack':
+      return isStr(m.reqId) && typeof m.ok === 'boolean' && (m.reason === undefined || isStr(m.reason))
+        ? (m as ServerMessage)
+        : null
+    case 'pong':
+      return isNum(m.ts) && isNum(m.serverTime) ? (m as ServerMessage) : null
+    case 'error':
+      return isStr(m.code) && isStr(m.message) ? (m as ServerMessage) : null
+    default:
+      return null
+  }
+}

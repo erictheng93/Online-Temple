@@ -1,10 +1,46 @@
-# 線上靜心遊戲
+# 傑群養心殿
 
-以《山寺》（Sansatemple）類型為參考的多人網頁遊戲，優先提供快速進入、低負擔互動與安靜共處的體驗。專案正式名稱與玩法細節尚未決定。
+以《山寺》（Sansatemple）類型為參考的多人網頁靜心遊戲，優先提供快速進入、低負擔互動與安靜共處的體驗。遊戲中的寺院名為「傑群養心殿」；玩法細節尚未決定。
 
 ## 目前狀態
 
-本目錄目前完成文件初始化，尚未建立前後端程式骨架、安裝套件或設定部署。尚無可執行的開發、建置與測試指令。
+- `web/`：前端已建立。包含程序化寺院場景、角色移動、動作與冷卻、多人同步客戶端、設定與效能資訊；聲音包含合成的鐘聲、木魚、頌缽、風聲、鳥叫與五聲音階佛樂。
+- 後端：尚未建立。前端在未設定伺服器時以單人模式運作，也可以接開發用 mock 伺服器測試多人功能。
+- 玩法：尚未定義。目前只有一個示範模組（合十、頌缽、敲鐘），用來驗證接線，可以整個刪除。
+
+## 前端開發
+
+需要 Node.js ^20.19.0 或 >=22.12.0。
+
+```bash
+cd web
+npm ci
+npm run dev          # 開發伺服器 http://localhost:5173
+npm run typecheck    # vue-tsc 型別檢查
+npm test             # vitest 單元測試
+npm run build        # 型別檢查 + 正式建置到 web/dist
+```
+
+測試多人功能：
+
+```bash
+cd web
+npm run mock -- 20          # mock 伺服器，20 個機器人，ws://localhost:8080/ws
+echo VITE_WS_URL=ws://localhost:8080/ws > .env.local
+npm run dev
+```
+
+環境變數見 `web/.env.example`。在遊戲設定中開啟「顯示效能資訊」，可查看 FPS、CPU 時間與 draw call。
+
+## 加入玩法
+
+玩法以模組形式加入，不需要修改渲染、網路或 UI：
+
+1. 在 `web/src/game/gameplay/modules/` 新增模組，實作 `GameplayModule`（見 `gameplay/types.ts`）。
+2. 在 `install(api)` 中用 `api.actions.register()` 註冊動作。動作列、冷卻、動畫、音效與伺服器確認會自動接上。
+3. 需要新動作姿勢時用 `api.animations.registerClip()`；新音效用 `api.audio.loadSfx()`；HUD 數值用 `api.setStat()`。
+4. 在 `modules/index.ts` 登記模組，並移除 `demo.ts`。
+5. 需要新的伺服器訊息時，擴充 `net/protocol.ts` 的型別與 `decode()` 驗證。
 
 ## 文件入口
 
@@ -21,4 +57,7 @@
 
 ## 下一個實作階段
 
-建立前端骨架並固定 Vue 版本，再製作最小場景與聲音互動。開始後端實作時選定一個 Rust Web 框架，逐步加入多人同步，透過實際負載測試決定正式承載量。
+1. 定義玩法，並以玩法模組加入前端。
+2. 在手機實機量測發熱、耗電與持續遊玩的幀時間。
+3. 建立 Rust 後端（建議 Axum），實作 `web/src/game/net/protocol.ts` 的協定。
+4. 部署到正式主機並壓測，決定實際承載量。

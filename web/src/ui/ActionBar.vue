@@ -1,0 +1,119 @@
+<script setup lang="ts">
+import { onBeforeUnmount, ref, watch } from 'vue'
+import type { UiAction } from '../game/GameCore'
+
+const props = defineProps<{ actions: UiAction[] }>()
+defineEmits<{ perform: [id: string] }>()
+
+// 只有在有動作冷卻中時才計時，平常不佔用 CPU。
+const now = ref(performance.now())
+let timer: ReturnType<typeof setInterval> | null = null
+
+function tick() {
+  now.value = performance.now()
+  if (!props.actions.some((a) => a.readyAt > now.value) && timer) {
+    clearInterval(timer)
+    timer = null
+  }
+}
+
+watch(
+  () => props.actions,
+  (list) => {
+    now.value = performance.now()
+    if (!timer && list.some((a) => a.readyAt > now.value)) timer = setInterval(tick, 100)
+  },
+  { immediate: true },
+)
+
+onBeforeUnmount(() => {
+  if (timer) clearInterval(timer)
+})
+
+const progress = (a: UiAction) => (a.readyAt > now.value ? (a.readyAt - now.value) / a.cooldownMs : 0)
+</script>
+
+<template>
+  <nav v-if="actions.length" class="bar" aria-label="動作">
+    <button
+      v-for="a in actions"
+      :key="a.id"
+      type="button"
+      class="action"
+      :disabled="progress(a) > 0"
+      :style="{ '--p': progress(a) }"
+      @click="$emit('perform', a.id)"
+    >
+      <span class="ring" aria-hidden="true" />
+      <span v-if="a.glyph" class="glyph" aria-hidden="true">{{ a.glyph }}</span>
+      <span class="label">{{ a.label }}</span>
+    </button>
+  </nav>
+</template>
+
+<style scoped>
+.bar {
+  position: absolute;
+  left: 50%;
+  bottom: max(16px, env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  display: flex;
+  gap: 10px;
+  padding: 8px;
+  max-width: calc(100% - 24px);
+  overflow-x: auto;
+  border-radius: 999px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  scrollbar-width: none;
+}
+
+.action {
+  position: relative;
+  flex: none;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 2px;
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.06);
+  transition: background 0.2s, transform 0.12s;
+}
+
+.action:hover:not(:disabled) {
+  background: rgba(214, 180, 110, 0.22);
+}
+
+.action:active:not(:disabled) {
+  transform: scale(0.95);
+}
+
+.action:disabled {
+  cursor: default;
+  color: var(--ink-faint);
+}
+
+/* 冷卻遮罩：--p 從 1 降到 0 */
+.ring {
+  position: absolute;
+  inset: -1px;
+  border-radius: 50%;
+  background: conic-gradient(rgba(0, 0, 0, 0.45) calc(var(--p) * 360deg), transparent 0);
+  pointer-events: none;
+}
+
+.glyph {
+  font-size: 1.3rem;
+  line-height: 1;
+}
+
+.label {
+  font-size: 0.75rem;
+  letter-spacing: 0.1em;
+}
+</style>

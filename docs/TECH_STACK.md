@@ -1,6 +1,6 @@
 # 技術選型與執行限制
 
-記錄日期：2026-11-05。狀態：技術方向已確認，應用程式尚未建立。
+記錄日期：2026-11-05。狀態：前端骨架與單機／多人客戶端已建立於 `web/`；後端尚未建立，玩法尚未定義。
 
 ## 產品與工程優先順序
 
@@ -12,17 +12,31 @@
 
 | 層級 | 選擇 | 狀態 |
 | --- | --- | --- |
-| 前端建置 | Vite | 版本於建立骨架時選定 |
-| UI | Vue、TypeScript、Composition API | Vue 版本見下節 |
+| 前端建置 | Vite 8.3.6 | 已固定 |
+| UI | Vue 3.5.44、TypeScript 5.9.3、Composition API | 已固定 |
 | 元件語法 | `<script setup lang="ts">` | 已確認 |
-| 3D | Vanilla Three.js | 直接操作 Three.js，無 TresJS 或 R3F 整合層 |
+| 3D | Vanilla Three.js 0.187.0 | 直接操作 Three.js，無 TresJS 或 R3F 整合層 |
 | 後端 | Rust | Web 框架在 Axum／Actix-web 中擇一，尚未定案 |
 | 資料庫 | PostgreSQL | 版本於後端實作時選定 |
 | 部署 | Dokploy、Linux VPS | 保留使用者選定方式 |
 | 物件儲存 | Cloudflare R2 | 模型、貼圖與音訊等素材 |
 | Phase 2 | Tauri Mobile | 尚未開始實作 |
 
-目前尚未固定 Node.js、npm、TypeScript、Vite、Three.js、Rust、PostgreSQL 與 Tauri 的版本。建立對應骨架時選擇相容且受支援的穩定版本，再記錄工具鏈與依賴鎖定結果。
+前端依賴全部以精確版本寫入 `web/package.json`，並提交 `web/package-lock.json`：
+
+| 套件 | 版本 | 備註 |
+| --- | --- | --- |
+| Node.js | ^20.19.0 或 >=22.12.0 | Vite 8 的要求；CI 使用 22，本機驗證使用 22.23.2 |
+| vite | 8.3.6 | |
+| @vitejs/plugin-vue | 6.0.10 | |
+| vue | 3.5.44 | |
+| three / @types/three | 0.187.0 | |
+| typescript | 5.9.3 | 不採用 7.0：vue-tsc 依賴 TypeScript 的 JS API，7.0 原生版本尚未提供穩定的 JS API |
+| vue-tsc | 3.3.14 | |
+| vitest | 5.1.0 | 純邏輯單元測試 |
+| ws | 8.22.1 | 僅供開發用 mock 伺服器 |
+
+Rust、PostgreSQL 與 Tauri 的版本於對應實作時選定並記錄。
 
 ## Vue 版本與安裝規範
 
@@ -74,7 +88,7 @@ const soundEnabled = ref(false)
 </template>
 ```
 
-此範例只展示元件語法與 UI 狀態，實際音訊由 AudioManager 處理。以上安裝與檢查指令尚未在本專案執行，因為前端骨架尚未建立。
+此範例只展示元件語法與 UI 狀態，實際音訊由 AudioManager 處理。
 
 ## 前端邊界
 
@@ -87,9 +101,52 @@ Vue 管理選單、音量設定、房間資訊、個人計數與連線提示。�
 | NetworkClient | WebSocket、訊息編解碼、重連與狀態恢復 |
 | AudioManager | 長音軌、短音效、音量與暫停恢復 |
 
-這些是建議的責任邊界，尚不是現存檔名或 API。高頻玩家狀態直接供遊戲核心使用，UI 只訂閱必要的低頻摘要。
+以上模組已實作於 `web/src/game/`，由 `GameCore` 擁有並負責建立與釋放順序。高頻玩家狀態直接供遊戲核心使用，UI 只透過 `UiState` 接收低頻摘要（內容改變時才推送，最多每 250 ms 一次）。
 
 直接使用 Three.js 的目的是控制高頻更新與依賴邊界；它不保證在相同場景下比所有封裝更快。效果須由相同素材、畫質、裝置與互動負載的量測判斷。
+
+## 前端實作現況
+
+| 路徑 | 職責 |
+| --- | --- |
+| `src/game/GameCore.ts` | 擁有所有子系統；渲染排程、生命週期、網路訊息分派、UI 橋接 |
+| `src/game/render/` | `SceneRenderer`（renderer、鏡頭、畫質、context loss）、`TempleScene`（程序化場景）、`AvatarFactory`、`ResourceTracker`（GPU 資源擁有權） |
+| `src/game/anim/` | 程序化角色動畫與動作片段表 |
+| `src/game/audio/` | `AudioManager`：環境音與音效分軌、合成音色（鐘、木魚、頌缽、風聲、鳥叫）、背景暫停；`ChantMusic`：程序化佛樂 |
+| `src/game/net/` | `protocol`（協定草案與驗證）、`NetworkClient`（重連、心跳、節流、確認重送）、`OutboundQueue`、`backoff` |
+| `src/game/world/` | 場地配置（場景與碰撞共用）、移動與碰撞、玩家管理與插值 |
+| `src/game/input/` | 點擊移動、拖曳旋轉、雙指／滾輪縮放、鍵盤 |
+| `src/game/gameplay/` | **玩法擴充點**：`ActionRegistry`、`GameplayModule` 介面、`modules/`（目前只有可刪除的示範模組） |
+| `src/ui/` | Vue 介面：進場、狀態列、動作列、設定、效能資訊、提示 |
+| `scripts/mock-server.mjs` | 開發用 mock 伺服器，實作同一協定並提供機器人 |
+
+### 渲染排程
+
+- 有移動、動畫或鏡頭移動時以畫質上限幀率繪製（省電／標準 30 FPS，高畫質 60 FPS），高更新率螢幕會略過多餘的 rAF。
+- 靜止時，標準與高畫質以 8／15 FPS 繪製燈火與香煙；省電模式完全停止迴圈，等輸入或網路事件喚醒。
+- 切到背景時停止迴圈、暫停 AudioContext、停止送出位置；回前景時重設時間基準並直接把鏡頭移到定位。
+- 繪製像素同時受 devicePixelRatio 上限與總像素上限限制。
+
+### 已量測（桌面 Chromium、Playwright，非手機實測）
+
+| 情境 | 結果 |
+| --- | --- |
+| 單人、高畫質、移動中 | 60 FPS，每幀 CPU 約 0.3 ms，35～39 draw call，約 2.5k 三角形 |
+| 單人、高畫質、靜止 | 約 13 FPS（目標 15） |
+| 單人、省電、靜止 | 3 秒內 0 次繪製 |
+| 背景分頁 | 0 次繪製 |
+| mock 伺服器 151 人、高畫質（顯示 121 人，角色批次繪製） | 60 FPS，每幀 CPU 約 0.7 ms，52 draw call，約 18k 三角形 |
+| mock 伺服器關閉再啟動 | 自動重連約 2 秒，玩家清單以新快照取代 |
+
+### 已知限制與後續
+
+- 角色的袍、頭、影子以 InstancedMesh 批次繪製，不論人數都是 3 個 draw call；名牌為個別 sprite，只顯示最近 12 人。批次容量 160（`AVATAR_CAPACITY`），需大於最高畫質的可見人數。
+- 可見人數上限（省電 30／標準 60／高畫質 120）仍需依手機實測調整；人數多時主要成本轉為三角形數與透明的影子重疊。
+- 移動碰撞只把角色推出障礙物，不做尋路。
+- 音效為合成音色，正式錄音可透過 `AudioManager.loadSfx()` 與 `VITE_AMBIENT_URL` 替換。設定 `VITE_AMBIENT_URL` 時以錄音取代風聲與佛樂，鳥叫仍保留。
+- 佛樂為即時生成的原創樂句：A 宮五聲音階、空五度持續和聲（每 12～18 秒交叉淡化）、每 20～40 秒一句簫聲旋律、合成殘響（3.5 秒脈衝響應）。桌面實測 30 秒峰值 0.27、RMS 0.04～0.08。手機上 ConvolverNode 與持續振盪器的耗電尚未量測，若偏高可改用較短的殘響或在省電畫質關閉佛樂。
+- 協定為 JSON 草案，欄位以 Rust 後端定案為準。
+- 尚未做手機實機的發熱、耗電與 20～30 分鐘幀時間測試。
 
 ## 載入、渲染與音訊方向
 
