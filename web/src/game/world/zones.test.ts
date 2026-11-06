@@ -1,0 +1,53 @@
+import { describe, expect, it } from 'vitest'
+import { resolveCollisions, stepMover, type MoveConfig } from './movement'
+import { HALL_STATUES, ZONES, ZONE_IDS, isZoneId, portalApproach, portalAt, portalForTap } from './zones'
+
+const cfgFor = (id: keyof typeof ZONES): MoveConfig => ({ speed: 3.2, bounds: ZONES[id].bounds, obstacles: ZONES[id].obstacles })
+
+describe('zones', () => {
+  it('出生點與出入口落點都在可走範圍、不在障礙物或出入口內（避免來回瞬移）', () => {
+    for (const id of ZONE_IDS) {
+      const zone = ZONES[id]
+      const poses = [zone.spawn, ...ZONE_IDS.flatMap((other) => ZONES[other].portals.filter((p) => p.to === id).map((p) => p.spawn))]
+      for (const pose of poses) {
+        expect(resolveCollisions(pose.x, pose.z, cfgFor(id)), `${id} 落點被推出障礙物`).toEqual({ x: pose.x, z: pose.z })
+        expect(portalAt(id, pose.x, pose.z), `${id} 落點在出入口內`).toBeNull()
+      }
+    }
+  })
+
+  it('從庭院出生點直走向殿門會進入殿內出入口；殿內走回門口會觸發回庭院', () => {
+    for (const [id, target] of [['courtyard', { x: 0, z: -20 }], ['hall', { x: 0, z: 20 }]] as const) {
+      const from = id === 'courtyard' ? { x: 0, z: -4.6 } : ZONES.hall.spawn
+      const s = { x: from.x, z: from.z, heading: 0, target }
+      let hit = null
+      for (let i = 0; i < 200 && !hit; i++) {
+        stepMover(s, { dirX: 0, dirZ: 0 }, 0.05, cfgFor(id))
+        if (!s.target) s.target = target // 撞到障礙物會放棄目標，重新指定以模擬持續往前走
+        hit = portalAt(id, s.x, s.z)
+      }
+      expect(hit?.to).toBe(id === 'courtyard' ? 'hall' : 'courtyard')
+    }
+  })
+
+  it('神像方位：以神明為主體，觀音在主佛左手邊（+x，龍邊），關聖帝君在右手邊（-x，虎邊）', () => {
+    expect(HALL_STATUES.buddha.x).toBe(0)
+    expect(HALL_STATUES.guanyin.x).toBeGreaterThan(0)
+    expect(HALL_STATUES.guangong.x).toBeLessThan(0)
+  })
+
+  it('點擊主殿建築會導向殿門，且殿門的走近點可抵達並觸發入口', () => {
+    const portal = portalForTap('courtyard', 0, -12)
+    expect(portal?.to).toBe('hall')
+    const approach = resolveCollisions(portalApproach(portal!).x, portalApproach(portal!).z, cfgFor('courtyard'))
+    expect(portalAt('courtyard', approach.x, approach.z)?.to).toBe('hall')
+    expect(portalForTap('courtyard', 0.6, -63.7)?.to).toBe('hall') // 實測：點屋頂時射線落在很遠的後方
+    expect(portalForTap('courtyard', 0, 5)).toBeNull()
+  })
+
+  it('isZoneId 只接受已知場景', () => {
+    expect(isZoneId('hall')).toBe(true)
+    expect(isZoneId('roof')).toBe(false)
+    expect(isZoneId(undefined)).toBe(false)
+  })
+})

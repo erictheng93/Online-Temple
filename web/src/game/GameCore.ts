@@ -10,11 +10,13 @@ import { InputController } from './input/InputController'
 import { NetworkClient, type ConnectionStatus } from './net/NetworkClient'
 import type { ServerMessage } from './net/protocol'
 import { ResourceTracker } from './render/ResourceTracker'
-import { SceneRenderer } from './render/SceneRenderer'
+import { buildHallScene, type HallScene } from './render/HallScene'
+import { HALL_ENV, OUTDOOR_ENV, SceneRenderer } from './render/SceneRenderer'
 import { buildTempleScene, type TempleScene } from './render/TempleScene'
-import { OBSTACLES, WORLD_BOUNDS } from './world/layout'
 import { resolveCollisions, stepMover, type MoveConfig } from './world/movement'
+import { findPath, type Point } from './world/pathfind'
 import { Players } from './world/Players'
+import { ZONES, isZoneId, portalApproach, portalAt, portalForTap, type Portal, type Pose, type ZoneId } from './world/zones'
 
 export interface UiAction {
   id: string
@@ -33,6 +35,9 @@ export interface UiState {
   online: number
   quality: QualityLevel
   contextLost: boolean
+  /** 場景切換中（畫面淡出黑幕）。 */
+  fading: boolean
+  zone: ZoneId
   actions: UiAction[]
   stats: Array<{ key: string; label: string; value: string | number }>
   perf: { fps: number; frameMs: number; calls: number; triangles: number; rttMs: number | null }
@@ -50,6 +55,11 @@ export interface GameCoreOptions {
 const MOVE_SPEED = 3.2
 const SFX_HEARING_RANGE = 28
 const UI_PUSH_MS = 250
+/** 場景切換：淡出時間與淡入前的停留（毫秒），需與 App.vue 的 CSS 過場一致。 */
+const FADE_MS = 400
+const FADE_HOLD_MS = 150
+
+const moveConfigFor = (zone: ZoneId): MoveConfig => ({ speed: MOVE_SPEED, bounds: ZONES[zone].bounds, obstacles: ZONES[zone].obstacles })
 
 /**
  * 遊戲核心：擁有所有子系統，並負責它們的建立與釋放順序。
@@ -60,6 +70,13 @@ export class GameCore {
   private renderer: SceneRenderer
   private tracker = new ResourceTracker()
   private temple: TempleScene
+  /** 殿內場景：第一次進殿時才建立，避免拖慢首次進場。 */
+  private hall: HallScene | null = null
+  private zone: ZoneId = 'courtyard'
+  private inPortal = false
+  /** 點擊移動尚未走到的轉折點（目前目標在 mover.target）。 */
+  private path: Point[] = []
+  private fading = false
   private anim = new AnimationSystem()
   private players: Players
   private input: InputController
@@ -67,7 +84,7 @@ export class GameCore {
   private audio = new AudioManager()
   private actions = new ActionRegistry()
   private uninstallers: Array<() => void> = []
-  private moveCfg: MoveConfig = { speed: MOVE_SPEED, bounds: WORLD_BOUNDS, obstacles: OBSTACLES }
+  private moveCfg: MoveConfig = moveConfigFor('courtyard')
   private raycaster = new THREE.Raycaster()
   private marker: THREE.Mesh
   private markerUntil = 0
@@ -190,6 +207,7 @@ export class GameCore {
     if (def.locksMovement) {
       local.lockedUntil = now + def.durationMs
       local.mover.target = null
+      this.path = []
     }
     this.anim.play(local.anim, def.animation, now, def.durationMs)
     if (def.sound) this.audio.play(def.sound)
@@ -305,12 +323,20 @@ export class GameCore {
 
     if (now >= local.lockedUntil) {
       const k = this.input.keyDirection
+      if (k.x !== 0 || k.y !== 0) this.path = [] // 鍵盤操作取消點擊路徑
       wantsMove = k.x !== 0 || k.y !== 0 || local.mover.target !== null
       const yaw = this.renderer.yaw
       // 鏡頭在角色後方 (sin yaw, cos yaw) 方向，畫面「上」= 遠離鏡頭。
       const dirX = Math.cos(yaw) * k.x + Math.sin(yaw) * k.y
       const dirZ = -Math.sin(yaw) * k.x + Math.cos(yaw) * k.y
+      const target = local.mover.target
       moving = stepMover(local.mover, { dirX, dirZ }, dt, this.moveCfg)
+      if (target && !local.mover.target) {
+        // 抵達轉折點就接著走下一段；被擋住（離轉折點仍遠）則放棄整條路徑。
+        const arrived = Math.hypot(target.x - local.mover.x, target.z - local.mover.z) < 0.2
+        local.mover.target = arrived ? (this.path.shift() ?? null) : null
+        if (!arrived) this.path = []
+      }
     }
     local.anim.moving = moving
 
@@ -321,9 +347,17 @@ export class GameCore {
     }
     this.wasMoving = moving
 
+    // 走進出入口（從外面踏入，避免出生點剛好在出入口時來回觸發）
+    const portal = portalAt(this.zone, local.mover.x, local.mover.z)
+    if (portal && !this.inPortal && !this.fading) this.beginZoneTransition(portal)
+    this.inPortal = portal !== null
+
     const playersActive = this.players.update(now, dt, t)
-    this.temple.update(t, dt)
-    const cameraMoving = this.renderer.follow(local.mover.x, local.mover.z, dt, this.snapCamera)
+    if (this.zone === 'hall') this.hall?.update(t, dt)
+    else this.temple.update(t, dt)
+    // 殿內越靠近神龕（z 從 1 到 -3.5），鏡頭注視點越往上抬，像抬頭仰望神像。
+    const lookUp = this.zone === 'hall' ? Math.min(1, Math.max(0, (1 - local.mover.z) / 4.5)) : 0
+    const cameraMoving = this.renderer.follow(local.mover.x, local.mover.z, dt, this.snapCamera, 1.1 + lookUp * 1.6)
     this.snapCamera = false
 
     let markerActive = false
@@ -340,7 +374,8 @@ export class GameCore {
       }
     }
 
-    return moving || wantsMove || playersActive || cameraMoving || markerActive || this.temple.hasTransientMotion()
+    const sceneMotion = this.zone === 'courtyard' && this.temple.hasTransientMotion()
+    return moving || wantsMove || playersActive || cameraMoving || markerActive || sceneMotion
   }
 
   private countFrame(cpuMs: number, time: number): void {
@@ -369,14 +404,74 @@ export class GameCore {
     const local = this.players.local
     if (performance.now() < local.lockedUntil) return
     this.raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), this.renderer.camera)
-    const hit = this.raycaster.intersectObject(this.temple.walkSurface, false)[0]
+    const surface = this.zone === 'hall' && this.hall ? this.hall.walkSurface : this.temple.walkSurface
+    const hit = this.raycaster.intersectObject(surface, false)[0]
     if (!hit) return
-    const p = resolveCollisions(hit.point.x, hit.point.z, this.moveCfg)
-    local.mover.target = p
+    // 點到主殿建築時走向殿門，而不是被推到建築最近的邊緣。
+    const tapPortal = portalForTap(this.zone, hit.point.x, hit.point.z)
+    const want = tapPortal ? portalApproach(tapPortal) : { x: hit.point.x, z: hit.point.z }
+    const p = resolveCollisions(want.x, want.z, this.moveCfg)
+    const path = findPath({ x: local.mover.x, z: local.mover.z }, p, this.moveCfg)
+    if (!path) return
+    local.mover.target = path.shift() ?? null
+    this.path = path
     this.marker.position.set(p.x, 0.08, p.z)
     this.marker.visible = true
     this.markerUntil = performance.now() + 1600
     this.wake()
+  }
+
+  // ---------- 場景切換 ----------
+
+  /** 淡出 → 切換場景 → 淡入。期間鎖住移動。 */
+  private beginZoneTransition(portal: Portal): void {
+    const local = this.players.local
+    this.fading = true
+    local.mover.target = null
+    this.path = []
+    local.lockedUntil = performance.now() + FADE_MS * 2 + FADE_HOLD_MS
+    this.input.clearKeys()
+    this.pushUi(true)
+    setTimeout(() => {
+      if (this.disposed) return
+      this.applyZone(portal.to, portal.spawn)
+      this.net.sendZone(portal.to, portal.spawn.x, portal.spawn.z, portal.spawn.heading)
+      this.opts.onToast(portal.to === 'hall' ? `進入 ${ZONES.hall.name}` : `回到${ZONES.courtyard.name}`)
+      setTimeout(() => {
+        if (this.disposed) return
+        this.fading = false
+        this.pushUi(true)
+        this.wake()
+      }, FADE_HOLD_MS)
+    }, FADE_MS)
+  }
+
+  /** 立即切換到指定場景與位置（無過場）。 */
+  private applyZone(zone: ZoneId, pose: Pose): void {
+    if (zone === 'hall' && !this.hall) {
+      this.hall = buildHallScene(this.tracker)
+      this.renderer.scene.add(this.hall.root)
+    }
+    this.zone = zone
+    this.moveCfg = moveConfigFor(zone)
+    this.temple.root.visible = zone === 'courtyard'
+    if (this.hall) this.hall.root.visible = zone === 'hall'
+    this.renderer.setEnvironment(zone === 'hall' ? HALL_ENV : OUTDOOR_ENV)
+    const def = ZONES[zone]
+    this.renderer.setCameraLimits(def.camera, def.cameraBounds)
+    // 鏡頭放在角色背後：角色面向 (sin h, cos h)，鏡頭偏移方向為其反向。
+    this.renderer.yaw = pose.heading + Math.PI
+
+    const pos = resolveCollisions(pose.x, pose.z, this.moveCfg)
+    Object.assign(this.players.local.mover, { ...pos, heading: pose.heading, target: null })
+    this.path = []
+    this.players.setLocalZone(zone)
+    this.inPortal = portalAt(zone, pos.x, pos.z) !== null
+    this.marker.visible = false
+    this.audio.setIndoor(zone === 'hall')
+    this.snapCamera = true
+    this.wake()
+    this.pushUi(true)
   }
 
   // ---------- 生命週期 ----------
@@ -410,9 +505,9 @@ export class GameCore {
         this.players.clearRemotes()
         for (const p of m.players) {
           if (p.id === m.selfId) {
-            const pos = resolveCollisions(p.x, p.z, this.moveCfg)
-            Object.assign(this.players.local.mover, { ...pos, heading: p.heading, target: null })
-            this.snapCamera = true
+            // 伺服器記錄的場景與位置為準（斷線恢復時可能在殿內）。
+            const zone: ZoneId = isZoneId(p.zone) ? p.zone : 'courtyard'
+            this.applyZone(zone, { x: p.x, z: p.z, heading: p.heading })
           } else {
             const r = this.players.upsert(p)
             if (p.action) {
@@ -444,6 +539,9 @@ export class GameCore {
       case 'action':
         this.onRemoteAction(m)
         break
+      case 'zone':
+        if (m.id !== this.selfId) this.players.setRemoteZone(m.id, m.zone, m.x, m.z, m.heading)
+        break
       case 'pong':
         this.serverOffset = m.serverTime - performance.now()
         break
@@ -464,7 +562,7 @@ export class GameCore {
     const startedAt = m.startedAt - this.serverOffset
     if (now - startedAt > def.durationMs) return
     this.anim.play(r.anim, def.animation, now, def.durationMs, startedAt)
-    if (def.sound && now - startedAt < 1500) {
+    if (def.sound && r.zone === this.zone && now - startedAt < 1500) {
       const local = this.players.local.mover
       const d = Math.hypot(r.x - local.x, r.z - local.z)
       this.audio.play(def.sound, { gain: Math.max(0, 1 - d / SFX_HEARING_RANGE) * 0.7 })
@@ -514,6 +612,8 @@ export class GameCore {
       online: this.net.enabled ? this.players.count : 1,
       quality: this.quality,
       contextLost: this.contextLost,
+      fading: this.fading,
+      zone: this.zone,
       actions: this.actions.list().map((a) => ({
         id: a.id,
         label: a.label,

@@ -40,12 +40,14 @@ npm run check:ambient -- <音樂網址> <遊戲來源>  # 檢查 R2 上音樂檔
 - **GPU 資源**：geometry／material／texture 透過 `render/ResourceTracker` 的 `track()`／`trackMaterial()` 登記，由 tracker 統一釋放。
 - **渲染排程**：依需求繪製（`wake()` 標記 dirty）。移動中以畫質幀率上限繪製，靜止時降到 8／15 FPS，省電模式靜止時完全停止迴圈；背景分頁停止迴圈、暫停 AudioContext、停止送位置。改動任何會讓畫面變化的狀態，記得呼叫 `wake()`。
 - **角色繪製**：袍、頭、影子以 InstancedMesh 批次繪製（固定 3 個 draw call），容量 `AVATAR_CAPACITY`（160）須大於最高畫質的可見人數；名牌只顯示最近 12 人。
-- **場地配置**：`world/layout.ts` 同時供場景建構與碰撞使用（`OBSTACLES`、`WORLD_BOUNDS`），改場地要兩邊一致。
+- **場地與場景**：`world/zones.ts` 定義庭院與殿內兩個場景（可走範圍、障礙物、出生點、出入口、鏡頭範圍），庭院的細節在 `world/layout.ts`。場景建構、碰撞、尋路（`world/pathfind.ts`）都讀這份資料，改場地要一致；`zones.test.ts` 檢查落點不會卡進障礙物或來回瞬移。殿內場景在 `render/HallScene.ts`，第一次進殿才建立；靜態物件以 `render/mergeStatic.ts` 依材質合併。
+- **神像**：`render/statues.ts` 為程序化造型，每尊一個插槽，可用 `loadStatueModel()` 換成寫實 glTF。方位依傳統以神明為主體：觀音在主佛左手邊（+x，龍邊），關聖帝君在右手邊（-x，虎邊）。
 
 ### 網路協定
 
 - `src/game/net/protocol.ts` 是前後端協定的定義來源（JSON 草案，版本 1）。編碼集中在 `encode()`／`decode()`；`decode()` 負責驗證，新增伺服器訊息時同步擴充型別與驗證。改協定時前端、mock 伺服器與後端在同一個 PR 修改。
 - 語意分兩類：`move`／`stop` 可取代（`OutboundQueue` 合併未送出的舊位置）；`action` 需確認（帶 `reqId`，伺服器去重並回 `ack`，重送不重複執行）。
+- 玩家有所在場景（`zone`）；切換時送 `zone` 訊息，只顯示同場景的遠端玩家。
 - 伺服器每個 tick 送批次位置 `moves`（`MoveTuple[]`，只含有變動的玩家，上限 `MAX_MOVES_PER_MESSAGE`）。單則訊息上限 `MAX_MESSAGE_BYTES`（16 KB）。
 - `NetworkClient` 負責重連（`backoff.ts`）、心跳、送出節流與 `resumeToken` 恢復；渲染頻率與網路送出頻率各自獨立。
 

@@ -26,6 +26,15 @@ describe('decode', () => {
     expect(decode(JSON.stringify({ t: 'moves', m: Array(201).fill(['a', 0, 0, 0, 0]) }))).toBeNull()
   })
 
+  it('場景切換訊息與快照中的 zone 欄位', () => {
+    const z = { t: 'zone', id: 'a', zone: 'hall', x: 0, z: 7.4, heading: 3.14 }
+    expect(decode(JSON.stringify(z))).toEqual(z)
+    expect(decode(JSON.stringify({ ...z, zone: 5 }))).toBeNull()
+    const join = { t: 'join', player: { id: 'a', name: 'n', x: 0, z: 0, heading: 0, zone: 'hall' } }
+    expect(decode(JSON.stringify(join))).toEqual(join)
+    expect(decode(JSON.stringify({ t: 'join', player: { ...join.player, zone: 1 } }))).toBeNull()
+  })
+
   it('welcome 內任一玩家不合法就整則拒絕', () => {
     const ok = { id: 'a', name: 'n', x: 0, z: 0, heading: 0 }
     const base = { t: 'welcome', selfId: 'a', room: 'r', resumeToken: 't', serverTime: 0 }
