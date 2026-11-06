@@ -1,9 +1,9 @@
 name: server
 on:
   push:
-    paths: ['server/**', '.github/workflows/server.yml']
+    paths: ['server/**', 'web/src/game/net/protocol*', '.github/workflows/server.yml']
   pull_request:
-    paths: ['server/**', '.github/workflows/server.yml']
+    paths: ['server/**', 'web/src/game/net/protocol*', '.github/workflows/server.yml']
 permissions:
   contents: read
 jobs:
@@ -18,5 +18,12 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+        working-directory: web
+      - run: npm test -- --run src/game/net/protocol-fixtures.test.ts
+        working-directory: web
       - run: cargo build --locked --release
       - run: docker build -t temple-server:test .

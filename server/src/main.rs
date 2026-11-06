@@ -11,7 +11,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", config.port)).await?;
     tracing::info!(port = config.port, room_capacity = config.room_capacity, origins = ?config.allowed_origins, "server started");
     let (stop, stopped) = tokio::sync::oneshot::channel();
-    let server = axum::serve(listener, app())
+    let server = axum::serve(listener, app(config.allowed_origins))
         .with_graceful_shutdown(async {
             let _ = stopped.await;
         })
