@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { synthesizeBirdCall } from './AudioManager'
+import { runState, synthesizeBirdCall } from './AudioManager'
 
 // 只實作 synthesizeBirdCall 用到的 createBuffer，node 環境沒有 Web Audio。
 const fakeCtx = (sampleRate = 8000) =>
@@ -26,12 +26,17 @@ describe('synthesizeBirdCall', () => {
   })
 })
 
-describe('freqOf', () => {
-  it('對應 A 宮五聲音階並正確跨八度', async () => {
-    const { freqOf } = await import('./ChantMusic')
-    expect(freqOf(0, 0)).toBeCloseTo(110)
-    expect(freqOf(3, 0)).toBeCloseTo(110 * 2 ** (7 / 12)) // 徵音 E
-    expect(freqOf(5, 0)).toBeCloseTo(220) // 下一個八度的宮音
-    expect(freqOf(-1, 0)).toBeCloseTo(55 * 2 ** (9 / 12)) // 低八度的羽音 F#
+
+describe('runState', () => {
+  const v = { master: 0.8, music: 0.6, sfx: 0.8, muted: false }
+  it('靜音、總音量 0 或背景時整個音訊暫停', () => {
+    expect(runState(v, false, true)).toEqual({ audible: true, musicOn: true })
+    expect(runState({ ...v, muted: true }, false, true)).toEqual({ audible: false, musicOn: false })
+    expect(runState({ ...v, master: 0 }, false, true)).toEqual({ audible: false, musicOn: false })
+    expect(runState(v, true, true)).toEqual({ audible: false, musicOn: false })
+  })
+  it('環境音量 0 或尚未開始環境音時只停音樂', () => {
+    expect(runState({ ...v, music: 0 }, false, true)).toEqual({ audible: true, musicOn: false })
+    expect(runState(v, false, false)).toEqual({ audible: true, musicOn: false })
   })
 })

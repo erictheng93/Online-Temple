@@ -1,6 +1,6 @@
 # 技術選型與執行限制
 
-記錄日期：2026-11-05。狀態：前端骨架與單機／多人客戶端已建立於 `web/`；後端尚未建立，玩法尚未定義。
+記錄日期：2026-11-05，更新 2026-11-06。狀態：前端已建立於 `web/`；後端框架選定 Axum，依 [BACKEND_TASKS.md](BACKEND_TASKS.md) 實作中；玩法尚未定義。
 
 ## 產品與工程優先順序
 
@@ -16,7 +16,7 @@
 | UI | Vue 3.5.44、TypeScript 5.9.3、Composition API | 已固定 |
 | 元件語法 | `<script setup lang="ts">` | 已確認 |
 | 3D | Vanilla Three.js 0.187.0 | 直接操作 Three.js，無 TresJS 或 R3F 整合層 |
-| 後端 | Rust | Web 框架在 Axum／Actix-web 中擇一，尚未定案 |
+| 後端 | Rust 1.95.0、Axum 0.8 | 已選定，見下方「後端：Axum」 |
 | 資料庫 | PostgreSQL | 版本於後端實作時選定 |
 | 部署 | Dokploy、Linux VPS | 保留使用者選定方式 |
 | 物件儲存 | Cloudflare R2 | 模型、貼圖與音訊等素材 |
@@ -112,7 +112,8 @@ Vue 管理選單、音量設定、房間資訊、個人計數與連線提示。�
 | `src/game/GameCore.ts` | 擁有所有子系統；渲染排程、生命週期、網路訊息分派、UI 橋接 |
 | `src/game/render/` | `SceneRenderer`（renderer、鏡頭、畫質、context loss）、`TempleScene`（程序化場景）、`AvatarFactory`、`ResourceTracker`（GPU 資源擁有權） |
 | `src/game/anim/` | 程序化角色動畫與動作片段表 |
-| `src/game/audio/` | `AudioManager`：環境音與音效分軌、合成音色（鐘、木魚、頌缽、風聲、鳥叫）、背景暫停；`ChantMusic`：程序化佛樂 |
+| `src/game/audio/` | `AudioManager`：環境音樂檔串流、短音效（鐘、木魚、頌缽、鳥叫）即時合成、靜音／背景時暫停運算 |
+| `tools/ambient/` | 離線產生環境音樂檔（佛樂＋風聲）的樂譜與輸出腳本 |
 | `src/game/net/` | `protocol`（協定草案與驗證）、`NetworkClient`（重連、心跳、節流、確認重送）、`OutboundQueue`、`backoff` |
 | `src/game/world/` | 場地配置（場景與碰撞共用）、移動與碰撞、玩家管理與插值 |
 | `src/game/input/` | 點擊移動、拖曳旋轉、雙指／滾輪縮放、鍵盤 |
@@ -143,10 +144,20 @@ Vue 管理選單、音量設定、房間資訊、個人計數與連線提示。�
 - 角色的袍、頭、影子以 InstancedMesh 批次繪製，不論人數都是 3 個 draw call；名牌為個別 sprite，只顯示最近 12 人。批次容量 160（`AVATAR_CAPACITY`），需大於最高畫質的可見人數。
 - 可見人數上限（省電 30／標準 60／高畫質 120）仍需依手機實測調整；人數多時主要成本轉為三角形數與透明的影子重疊。
 - 移動碰撞只把角色推出障礙物，不做尋路。
-- 音效為合成音色，正式錄音可透過 `AudioManager.loadSfx()` 與 `VITE_AMBIENT_URL` 替換。設定 `VITE_AMBIENT_URL` 時以錄音取代風聲與佛樂，鳥叫仍保留。
-- 佛樂為即時生成的原創樂句：A 宮五聲音階、空五度持續和聲（每 12～18 秒交叉淡化）、每 20～40 秒一句簫聲旋律、合成殘響（3.5 秒脈衝響應）。桌面實測 30 秒峰值 0.27、RMS 0.04～0.08。手機上 ConvolverNode 與持續振盪器的耗電尚未量測，若偏高可改用較短的殘響或在省電畫質關閉佛樂。
+- 音效為合成音色，正式錄音可透過 `AudioManager.loadSfx()` 與 `VITE_AMBIENT_URL` 替換。
+- 環境音樂（佛樂＋風聲）不在手機上即時合成，見下方「環境音樂」。
 - 協定為 JSON 草案，欄位以 Rust 後端定案為準。
 - 尚未做手機實機的發熱、耗電與 20～30 分鐘幀時間測試。
+
+### 環境音樂
+
+- 佛樂與風聲由 `npm run render:ambient` 離線產生：`tools/ambient/score.ts` 為樂譜（A 宮五聲音階、空五度持續和聲、簫聲旋律、3.5 秒合成殘響、褐噪音風聲），以 `node-web-audio-api` 的 OfflineAudioContext 算出 188 秒，將尾段 8 秒以等功率交叉淡化疊回開頭，輸出 180 秒、44.1 kHz 立體聲、112 kbps 的 MP3（約 2.4 MB）。種子固定時結果可重現。
+- 遊戲以 HTMLMediaElement 串流循環播放（`VITE_AMBIENT_URL`），再接進 Web Audio 統一控制音量。手機執行時只解碼 MP3，不再即時運算和聲與殘響。
+- 循環接縫：內容無縫（接縫前後 2 秒 RMS 0.126／0.120，接縫樣本差 0.0001，小於一般相鄰樣本差 0.005）。MP3 編碼器在頭尾各留約 260／122 個靜音樣本，每次循環約有 9 ms 空隙。
+- 鳥叫（每 4～14 秒）與遠處頌缽仍為即時播放的短 AudioBuffer。
+- 靜音或總音量為 0：淡出後暫停 AudioContext，音樂檔暫停；「環境與音樂」為 0：音樂檔、鳥叫與頌缽停止，音效仍可播放；背景：同靜音。已在 Chromium 驗證 AudioContext 狀態為 `suspended`、media 為 `paused`。
+- 音樂檔放在 R2：與頁面不同網域時，R2 必須回應 `Access-Control-Allow-Origin`（允許遊戲網域），否則 `crossOrigin` 媒體接進 Web Audio 會輸出靜音。檔名含版本（例如 `temple-ambient-v1.mp3`）並設定長期快取，更新時換檔名。
+- 未設定 `VITE_AMBIENT_URL` 時只有鳥叫、頌缽與動作音效。
 
 ## 載入、渲染與音訊方向
 
@@ -160,6 +171,28 @@ Vue 管理選單、音量設定、房間資訊、個人計數與連線提示。�
 - 共用素材採明確的資源擁有權；離開場景時釋放不再使用的 GPU、音訊及連線資源。
 
 以上為初始工程方向，尚非經過驗證的效能保證。
+
+## 後端：Axum
+
+2026-11-06 選定 Axum 0.8（當時最新 0.8.9），不採用 Actix-web。理由：
+
+- 直接建立在 tokio 與 hyper 上，房間 actor（tokio task + channel）與 WebSocket 使用同一個執行環境，沒有額外的 actor 系統要學。
+- WebSocket 為官方功能（`ws` feature），可設定單則訊息上限。
+- 中介層使用 tower 生態（逾時、CORS、追蹤），與 `tower-http` 共用。
+- 本專案的負載以長連線廣播為主，兩者的 HTTP 吞吐差異不是瓶頸；選擇以維護成本與生態一致性為準。
+
+已確認參數：單一房間上限 50 人（`ROOM_CAPACITY`），超過時開新房間。任務拆分、驗收標準與稽核流程見 [BACKEND_TASKS.md](BACKEND_TASKS.md)。
+
+### 流量基準（前端量測）
+
+協定新增批次位置 `moves`（每個 tick 一則，只含有變動的玩家，座標精度 0.01 公尺）。以 mock 伺服器 50 人滿房、約半數機器人持續走動並隨機做動作，量測單一客戶端 20 秒：
+
+| 項目 | 結果 |
+| --- | --- |
+| 接收量 | 約 6.1 KB/s |
+| 訊息數 | 約 12.3 則/s（`moves` 約 9 則/s、`action` 約 3 則/s） |
+
+預算為每人每秒 150～460 bytes，此情境超出 13～40 倍。機器人移動頻率高於靜心遊戲的預期行為，屬偏悲觀的估計；後端仍須以「靜止不送、降低 tick、二進位量化」為設計前提，並在 T7 以實際負載量測。
 
 ## 多人同步方向
 

@@ -24,6 +24,12 @@ export interface PlayerSnapshot {
   action?: { id: string; startedAt: number }
 }
 
+/** 批次位置的單筆：[id, x, z, heading, moving]，moving 為 0 或 1。座標建議四捨五入到 0.01 公尺。 */
+export type MoveTuple = [id: string, x: number, z: number, heading: number, moving: 0 | 1]
+
+/** 單則 moves 最多筆數；超過時伺服器應拆成多則。 */
+export const MAX_MOVES_PER_MESSAGE = 200
+
 export type ClientMessage =
   | { t: 'hello'; v: number; name: string; resumeToken?: string }
   | { t: 'move'; x: number; z: number; heading: number; seq: number }
@@ -43,6 +49,8 @@ export type ServerMessage =
   | { t: 'join'; player: PlayerSnapshot }
   | { t: 'leave'; id: string }
   | { t: 'move'; id: string; x: number; z: number; heading: number; moving: boolean }
+  /** 批次位置：伺服器每個 tick 一則，只含有變動的玩家。元素為 [id, x, z, heading, moving(0|1)]。 */
+  | { t: 'moves'; m: MoveTuple[] }
   | { t: 'action'; playerId: string; id: string; startedAt: number; data?: Record<string, unknown> }
   | { t: 'ack'; reqId: string; ok: boolean; reason?: string }
   | { t: 'pong'; ts: number; serverTime: number }
@@ -62,6 +70,18 @@ function isPlayer(v: unknown): v is PlayerSnapshot {
   if (!isStr(v.id) || !isStr(v.name) || !isNum(v.x) || !isNum(v.z) || !isNum(v.heading)) return false
   if (v.action === undefined) return true
   return isObj(v.action) && isStr(v.action.id) && isNum(v.action.startedAt)
+}
+
+function isMoveTuple(v: unknown): v is MoveTuple {
+  return (
+    Array.isArray(v) &&
+    v.length === 5 &&
+    isStr(v[0]) &&
+    isNum(v[1]) &&
+    isNum(v[2]) &&
+    isNum(v[3]) &&
+    (v[4] === 0 || v[4] === 1)
+  )
 }
 
 /**
@@ -92,6 +112,10 @@ export function decode(raw: unknown): ServerMessage | null {
       return isStr(m.id) ? (m as ServerMessage) : null
     case 'move':
       return isStr(m.id) && isNum(m.x) && isNum(m.z) && isNum(m.heading) && typeof m.moving === 'boolean'
+        ? (m as ServerMessage)
+        : null
+    case 'moves':
+      return Array.isArray(m.m) && m.m.length <= MAX_MOVES_PER_MESSAGE && m.m.every(isMoveTuple)
         ? (m as ServerMessage)
         : null
     case 'action':

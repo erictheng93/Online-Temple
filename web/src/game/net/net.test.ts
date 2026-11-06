@@ -18,6 +18,14 @@ describe('decode', () => {
     expect(decode(new ArrayBuffer(4))).toBeNull()
   })
 
+  it('批次位置：合法時接受，任一筆格式錯誤或超過上限就整則拒絕', () => {
+    const ok = { t: 'moves', m: [['a', 1.25, -3, 0.5, 1], ['b', 0, 0, 0, 0]] }
+    expect(decode(JSON.stringify(ok))).toEqual(ok)
+    expect(decode(JSON.stringify({ t: 'moves', m: [['a', 1, 2, 3, 2]] }))).toBeNull()
+    expect(decode(JSON.stringify({ t: 'moves', m: [['a', 1, 2, 3]] }))).toBeNull()
+    expect(decode(JSON.stringify({ t: 'moves', m: Array(201).fill(['a', 0, 0, 0, 0]) }))).toBeNull()
+  })
+
   it('welcome 內任一玩家不合法就整則拒絕', () => {
     const ok = { id: 'a', name: 'n', x: 0, z: 0, heading: 0 }
     const base = { t: 'welcome', selfId: 'a', room: 'r', resumeToken: 't', serverTime: 0 }

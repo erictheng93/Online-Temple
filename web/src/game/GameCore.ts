@@ -145,7 +145,7 @@ export class GameCore {
       },
       onActivity: () => {
         // 使用者有操作時順便嘗試恢復被系統中斷的音訊（iOS）。
-        if (this.audio.unlocked && !this.audio.running && !this.paused) void this.audio.resume()
+        if (this.audio.audible && !this.audio.running && !this.paused) void this.audio.resume()
         this.wake()
       },
     })
@@ -434,6 +434,11 @@ export class GameCore {
         break
       case 'move':
         if (m.id !== this.selfId) this.players.setRemoteTarget(m.id, m.x, m.z, m.heading, m.moving)
+        break
+      case 'moves':
+        for (const [id, x, z, heading, moving] of m.m) {
+          if (id !== this.selfId) this.players.setRemoteTarget(id, x, z, heading, moving === 1)
+        }
         break
       case 'action':
         this.onRemoteAction(m)

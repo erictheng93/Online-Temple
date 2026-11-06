@@ -13,6 +13,9 @@ const NAMES = ['靜心', '晨鐘', '松風', '雲水', '明月', '竹影', '清�
 const wss = new WebSocketServer({ port: PORT, path: '/ws', maxPayload: 16 * 1024 })
 const players = new Map() // id -> { id, name, x, z, heading, ws?, bot? }
 const seenReq = new Map() // reqId -> ack（模擬伺服器去重）
+const pendingMoves = new Map() // id -> [id, x, z, heading, moving]，每個 tick 合併成一則 moves
+const r2 = (v) => Math.round(v * 100) / 100
+const queueMove = (p, moving) => pendingMoves.set(p.id, [p.id, r2(p.x), r2(p.z), r2(p.heading), moving ? 1 : 0])
 let nextId = 1
 
 const now = () => Date.now()
@@ -53,7 +56,7 @@ setInterval(() => {
     const d = Math.hypot(dx, dz)
     if (d < 0.2) {
       b.wait = 2 + Math.random() * 6
-      broadcast({ t: 'move', id: p.id, x: p.x, z: p.z, heading: p.heading, moving: false })
+      queueMove(p, false)
       if (Math.random() < 0.6) {
         broadcast({ t: 'action', playerId: p.id, id: ACTIONS[Math.floor(Math.random() * ACTIONS.length)], startedAt: now() })
       }
@@ -63,7 +66,12 @@ setInterval(() => {
     p.x += (dx / d) * step
     p.z += (dz / d) * step
     p.heading = Math.atan2(dx, dz)
-    broadcast({ t: 'move', id: p.id, x: p.x, z: p.z, heading: p.heading, moving: true })
+    queueMove(p, true)
+  }
+  // 每個 tick 一則批次位置（含真人玩家），只送有變動的人。
+  if (pendingMoves.size) {
+    broadcast({ t: 'moves', m: [...pendingMoves.values()] })
+    pendingMoves.clear()
   }
 }, 100)
 
@@ -97,7 +105,7 @@ wss.on('connection', (ws) => {
       case 'move':
       case 'stop':
         Object.assign(me, { x: m.x, z: m.z, heading: m.heading })
-        broadcast({ t: 'move', id: me.id, x: m.x, z: m.z, heading: m.heading, moving: m.t === 'move' }, me.id)
+        queueMove(me, m.t === 'move')
         break
       case 'action': {
         const cached = seenReq.get(m.reqId)

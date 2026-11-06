@@ -1,11 +1,12 @@
-import { ChantMusic } from './ChantMusic'
-
 /**
- * 音訊管理：長音軌（環境音）與短音效分開、獨立音量、淡入淡出、背景暫停。
+ * 音訊管理：環境音樂（循環音檔）與短音效分開、獨立音量、淡入淡出、背景暫停。
  *
+ * 耗電原則：手機上不即時合成長時間的音樂。
+ * - 佛樂與風聲是預先產生的循環 MP3（tools/ambient/），以 HTMLMediaElement 串流播放，由 VITE_AMBIENT_URL 指向 R2。
+ * - 鐘、木魚、頌缽、鳥叫是一次性合成的短 AudioBuffer，只在觸發時播放。
+ * - 靜音或總音量為 0 時暫停整個 AudioContext；環境音量為 0 時停止音樂檔與鳥叫；切到背景時同樣暫停。
+ *   暫停後音訊執行緒不再運算，才真正省電。
  * - AudioContext 只能在使用者操作後建立／恢復，因此 unlock() 必須在點擊事件中呼叫。
- * - 長音軌建議用 HTMLMediaElement 串流（playMusic），再接進 Web Audio 統一控制音量（iOS 忽略 media.volume）。
- * - 尚無錄音素材時，以合成方式產生鐘聲、木魚、頌缽、風聲、鳥叫與佛樂作為預設。
  */
 
 type SynthName = 'bell' | 'wood' | 'bowl'
@@ -97,6 +98,16 @@ export function synthesizeBirdCall(ctx: BaseAudioContext, random: () => number =
 
 const BIRD_VARIANTS = 5
 
+/**
+ * 依音量與前景狀態決定音訊該運作到什麼程度（純函式，方便測試）。
+ * - audible=false：整個 AudioContext 暫停。
+ * - musicOn=false：音樂檔、鳥叫與遠處頌缽停止。
+ */
+export function runState(v: Volumes, hidden: boolean, ambientStarted: boolean): { audible: boolean; musicOn: boolean } {
+  const audible = !hidden && !v.muted && v.master > 0
+  return { audible, musicOn: audible && ambientStarted && v.music > 0 }
+}
+
 export class AudioManager {
   private ctx: AudioContext | null = null
   private master: GainNode | null = null
@@ -105,19 +116,29 @@ export class AudioManager {
   private buffers = new Map<string, AudioBuffer>()
   private pendingUrls = new Map<string, string>()
   private voices = 0
-  private ambientNodes: AudioNode[] = []
-  private ambientSources: AudioScheduledSourceNode[] = []
-  private ambientTimer: ReturnType<typeof setTimeout> | null = null
-  private birdTimer: ReturnType<typeof setTimeout> | null = null
   private birdBuffers: AudioBuffer[] = []
-  private chant: ChantMusic | null = null
+  private birdTimer: ReturnType<typeof setTimeout> | null = null
+  private bowlTimer: ReturnType<typeof setTimeout> | null = null
   private media: HTMLAudioElement | null = null
   private mediaNode: MediaElementAudioSourceNode | null = null
+  private ambientStarted = false
   private volumes: Volumes = { master: 0.8, music: 0.6, sfx: 0.8, muted: false }
-  private suspendedByApp = false
+  private hidden = false
+  /** 每次狀態變更遞增；延遲中的暫停若遇到新變更就取消。 */
+  private stateToken = 0
 
   get unlocked(): boolean {
     return this.ctx !== null
+  }
+
+  /** AudioContext 是否在運作。靜音時為 false 屬正常。 */
+  get running(): boolean {
+    return this.ctx?.state === 'running'
+  }
+
+  /** 目前是否應該發出聲音（未靜音、在前景）。 */
+  get audible(): boolean {
+    return runState(this.volumes, this.hidden, this.ambientStarted).audible
   }
 
   /** 在使用者點擊時呼叫。重複呼叫安全。 */
@@ -138,14 +159,13 @@ export class AudioManager {
       this.birdBuffers = Array.from({ length: BIRD_VARIANTS }, () => synthesizeBirdCall(ctx))
       for (const [name, url] of this.pendingUrls) void this.loadSfx(name, url)
       this.pendingUrls.clear()
-      this.applyVolumes(1.5)
     }
-    await this.resume()
+    await this.applyRunState(1.5)
   }
 
   setVolumes(v: Volumes): void {
     this.volumes = { ...v }
-    this.applyVolumes(0.15)
+    void this.applyRunState(0.15)
   }
 
   /** 以 URL 載入或替換音效（例如正式錄製的鐘聲）。unlock 前呼叫會延後載入。 */
@@ -163,11 +183,12 @@ export class AudioManager {
     return this.buffers.has(name) || this.pendingUrls.has(name)
   }
 
-  /** 播放短音效。gain 可用於距離衰減。超過同時發聲上限時略過。 */
+  /** 播放短音效。gain 可用於距離衰減。超過同時發聲上限或音效音量為 0 時略過。 */
   play(name: string, opts: { gain?: number; rate?: number } = {}): void {
     const ctx = this.ctx
     const buffer = this.buffers.get(name)
     if (!ctx || !buffer || !this.sfxBus || ctx.state !== 'running' || this.voices >= MAX_VOICES) return
+    if (this.volumes.sfx <= 0) return
     const gain = opts.gain ?? 1
     if (gain < 0.01) return
     const src = ctx.createBufferSource()
@@ -186,77 +207,31 @@ export class AudioManager {
   }
 
   /**
-   * 開始環境音。有 url 時串流播放錄音，否則用合成風聲與佛樂；兩種模式都有鳥叫。
+   * 開始環境音。url 為循環音樂檔（佛樂＋風聲）；未提供時只有鳥叫與遠處頌缽。
+   * 音樂檔與頁面不同來源時，R2 須回應 CORS 標頭，否則 Web Audio 會輸出靜音。
    */
   startAmbient(url?: string): void {
     const ctx = this.ctx
     if (!ctx || !this.musicBus) return
     this.stopAmbient()
+    this.ambientStarted = true
     if (url) {
       const media = new Audio()
       media.crossOrigin = 'anonymous'
       media.src = url
       media.loop = true
       media.preload = 'auto'
+      media.addEventListener('error', () => console.warn('環境音樂載入失敗：', url), { once: true })
       this.media = media
       this.mediaNode = ctx.createMediaElementSource(media)
       this.mediaNode.connect(this.musicBus)
-      void media.play().catch(() => {})
-      this.scheduleBirds()
-      return
     }
-
-    // 風聲：循環白噪音經低通濾波，增益由極慢的 LFO 調變。
-    const noise = ctx.createBuffer(1, ctx.sampleRate * 3, ctx.sampleRate)
-    const d = noise.getChannelData(0)
-    let last = 0
-    for (let i = 0; i < d.length; i++) {
-      last = last * 0.97 + (Math.random() * 2 - 1) * 0.03
-      d[i] = last * 6
-    }
-    const src = ctx.createBufferSource()
-    src.buffer = noise
-    src.loop = true
-    const lp = ctx.createBiquadFilter()
-    lp.type = 'lowpass'
-    lp.frequency.value = 420
-    const windGain = ctx.createGain()
-    windGain.gain.value = 0.22
-    const lfo = ctx.createOscillator()
-    lfo.frequency.value = 0.07
-    const lfoGain = ctx.createGain()
-    lfoGain.gain.value = 0.12
-    lfo.connect(lfoGain).connect(windGain.gain)
-    src.connect(lp).connect(windGain).connect(this.musicBus)
-
-    for (const s of [src, lfo]) s.start()
-    this.ambientSources = [src, lfo]
-    this.ambientNodes = [lp, windGain, lfoGain]
-
-    // 程序化佛樂：持續和聲、簫聲旋律與殘響。
-    this.chant = new ChantMusic(ctx, this.musicBus)
-    this.chant.start()
-    this.scheduleDistantBowl()
-    this.scheduleBirds()
+    void this.applyRunState(1.5)
   }
 
   stopAmbient(): void {
-    if (this.ambientTimer) clearTimeout(this.ambientTimer)
-    if (this.birdTimer) clearTimeout(this.birdTimer)
-    this.ambientTimer = this.birdTimer = null
-    this.chant?.stop()
-    this.chant = null
-    for (const s of this.ambientSources) {
-      try {
-        s.stop()
-      } catch {
-        // 已停止
-      }
-      s.disconnect()
-    }
-    for (const n of this.ambientNodes) n.disconnect()
-    this.ambientSources = []
-    this.ambientNodes = []
+    this.ambientStarted = false
+    this.stopAmbientTimers()
     if (this.media) {
       this.media.pause()
       this.media.removeAttribute('src')
@@ -267,29 +242,16 @@ export class AudioManager {
     }
   }
 
-  /** 進入背景：淡出後暫停 AudioContext，停止耗電。 */
+  /** 進入背景：淡出後暫停 AudioContext。 */
   async suspend(): Promise<void> {
-    const ctx = this.ctx
-    if (!ctx || ctx.state !== 'running') return
-    this.suspendedByApp = true
-    this.fadeMaster(0, 0.25)
-    this.media?.pause()
-    await new Promise((r) => setTimeout(r, 300))
-    if (this.suspendedByApp) await ctx.suspend().catch(() => {})
+    this.hidden = true
+    await this.applyRunState(0.25)
   }
 
-  /** 恢復播放並淡入。iOS 來電等中斷後也透過這裡恢復。 */
+  /** 回到前景；iOS 來電等中斷後也透過這裡恢復。 */
   async resume(): Promise<void> {
-    const ctx = this.ctx
-    if (!ctx) return
-    this.suspendedByApp = false
-    if (ctx.state !== 'running') await ctx.resume().catch(() => {})
-    if (this.media?.paused) void this.media.play().catch(() => {})
-    this.applyVolumes(0.8)
-  }
-
-  get running(): boolean {
-    return this.ctx?.state === 'running'
+    this.hidden = false
+    await this.applyRunState(0.8)
   }
 
   async dispose(): Promise<void> {
@@ -298,6 +260,48 @@ export class AudioManager {
     this.ctx = null
     this.buffers.clear()
     if (ctx) await ctx.close().catch(() => {})
+  }
+
+  private async applyRunState(fadeSeconds: number): Promise<void> {
+    const ctx = this.ctx
+    if (!ctx || !this.musicBus || !this.sfxBus) return
+    const token = ++this.stateToken
+    const v = this.volumes
+    const { audible, musicOn } = runState(v, this.hidden, this.ambientStarted)
+
+    if (audible) {
+      if (ctx.state !== 'running') await ctx.resume().catch(() => {})
+      if (token !== this.stateToken) return
+      const now = ctx.currentTime
+      this.musicBus.gain.setTargetAtTime(v.music, now, 0.1)
+      this.sfxBus.gain.setTargetAtTime(v.sfx, now, 0.1)
+      this.fadeMaster(v.master, fadeSeconds)
+    } else {
+      this.fadeMaster(0, fadeSeconds)
+    }
+
+    if (musicOn) {
+      if (this.media?.paused) void this.media.play().catch(() => {})
+      if (!this.birdTimer) this.scheduleBirds()
+      if (!this.bowlTimer) this.scheduleDistantBowl()
+    } else {
+      this.stopAmbientTimers()
+      // 等淡出結束再暫停音樂檔，避免突然中斷。
+      setTimeout(() => {
+        if (token === this.stateToken) this.media?.pause()
+      }, fadeSeconds * 1000)
+    }
+
+    if (!audible) {
+      await new Promise((r) => setTimeout(r, fadeSeconds * 1000 + 50))
+      if (token === this.stateToken && ctx.state === 'running') await ctx.suspend().catch(() => {})
+    }
+  }
+
+  private stopAmbientTimers(): void {
+    if (this.birdTimer) clearTimeout(this.birdTimer)
+    if (this.bowlTimer) clearTimeout(this.bowlTimer)
+    this.birdTimer = this.bowlTimer = null
   }
 
   /** 每隔數秒隨機一聲鳥叫，偶爾有另一隻鳥回應。 */
@@ -309,11 +313,12 @@ export class AudioManager {
     }, 4_000 + Math.random() * 10_000)
   }
 
-  /** 鳥叫走環境音軌（musicBus），由「環境音」音量控制；左右位置與音高隨機。 */
+  /** 鳥叫走環境音軌（musicBus），由「環境與音樂」音量控制；左右位置與音高隨機。 */
   private playBird(): void {
     const ctx = this.ctx
     const buffer = this.birdBuffers[Math.floor(Math.random() * this.birdBuffers.length)]
     if (!ctx || !buffer || !this.musicBus || ctx.state !== 'running' || this.voices >= MAX_VOICES) return
+    if (this.volumes.music <= 0) return
     const src = ctx.createBufferSource()
     src.buffer = buffer
     src.playbackRate.value = 0.9 + Math.random() * 0.2
@@ -336,20 +341,12 @@ export class AudioManager {
     src.start()
   }
 
+  /** 遠處偶爾傳來的頌缽聲。 */
   private scheduleDistantBowl(): void {
-    this.ambientTimer = setTimeout(() => {
+    this.bowlTimer = setTimeout(() => {
       this.play('bowl', { gain: 0.12, rate: 0.85 + Math.random() * 0.3 })
       this.scheduleDistantBowl()
     }, 25_000 + Math.random() * 30_000)
-  }
-
-  private applyVolumes(fadeSeconds: number): void {
-    const ctx = this.ctx
-    if (!ctx || !this.musicBus || !this.sfxBus) return
-    const now = ctx.currentTime
-    this.musicBus.gain.setTargetAtTime(this.volumes.music, now, 0.1)
-    this.sfxBus.gain.setTargetAtTime(this.volumes.sfx, now, 0.1)
-    this.fadeMaster(this.volumes.muted ? 0 : this.volumes.master, fadeSeconds)
   }
 
   private fadeMaster(value: number, seconds: number): void {
