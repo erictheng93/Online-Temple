@@ -16,7 +16,7 @@ import { buildTempleScene, type TempleScene } from './render/TempleScene'
 import { resolveCollisions, stepMover, type MoveConfig } from './world/movement'
 import { findPath, type Point } from './world/pathfind'
 import { Players } from './world/Players'
-import { ZONES, isZoneId, portalApproach, portalAt, portalForTap, type Portal, type Pose, type ZoneId } from './world/zones'
+import { ZONES, entryCamera, isZoneId, portalApproach, portalAt, portalForTap, type CameraPose, type Portal, type Pose, type ZoneId } from './world/zones'
 
 export interface UiAction {
   id: string
@@ -74,6 +74,8 @@ export class GameCore {
   private hall: HallScene | null = null
   private zone: ZoneId = 'courtyard'
   private inPortal = false
+  /** 離開各場景前的鏡頭，回來時還原（只用於 restoreCamera 的場景）。 */
+  private savedCamera: Partial<Record<ZoneId, CameraPose>> = {}
   /** 點擊移動尚未走到的轉折點（目前目標在 mover.target）。 */
   private path: Point[] = []
   private fading = false
@@ -452,6 +454,10 @@ export class GameCore {
       this.hall = buildHallScene(this.tracker)
       this.renderer.scene.add(this.hall.root)
     }
+    if (zone !== this.zone) {
+      const r = this.renderer
+      this.savedCamera[this.zone] = { yaw: r.yaw, pitch: r.pitch, distance: r.distance }
+    }
     this.zone = zone
     this.moveCfg = moveConfigFor(zone)
     this.temple.root.visible = zone === 'courtyard'
@@ -459,8 +465,11 @@ export class GameCore {
     this.renderer.setEnvironment(zone === 'hall' ? HALL_ENV : OUTDOOR_ENV)
     const def = ZONES[zone]
     this.renderer.setCameraLimits(def.camera, def.cameraBounds)
-    // 鏡頭放在角色背後：角色面向 (sin h, cos h)，鏡頭偏移方向為其反向。
-    this.renderer.yaw = pose.heading + Math.PI
+    // 出殿回到庭院時還原進殿前的視角；殿內則放在角色背後看向神龕。
+    const cam = entryCamera(zone, pose, this.savedCamera[zone], this.renderer.pitch)
+    this.renderer.yaw = cam.yaw
+    this.renderer.pitch = cam.pitch
+    this.renderer.distance = cam.distance
 
     const pos = resolveCollisions(pose.x, pose.z, this.moveCfg)
     Object.assign(this.players.local.mover, { ...pos, heading: pose.heading, target: null })

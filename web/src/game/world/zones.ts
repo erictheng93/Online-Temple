@@ -33,8 +33,13 @@ export interface ZoneDef {
   portals: ReadonlyArray<Portal>
   /** 鏡頭位置限制（室內避免鏡頭穿牆）；null 表示不限制。 */
   cameraBounds: { minX: number; maxX: number; minZ: number; maxZ: number; maxY: number } | null
-  /** 鏡頭預設距離與允許範圍。 */
-  camera: { distance: number; min: number; max: number }
+  /**
+   * 鏡頭預設距離與允許範圍。yaw 有值時，進入場景一律用這個水平角度（庭院固定從外面看向主殿）；
+   * 沒有時放在角色背後。
+   */
+  camera: { distance: number; min: number; max: number; yaw?: number }
+  /** 離開後再回來時，是否還原離開前的鏡頭（出殿後回到進殿前的視角）。 */
+  restoreCamera: boolean
 }
 
 const pad = (r: Rect, p: number): Rect => ({ minX: r.minX - p, maxX: r.maxX + p, minZ: r.minZ - p, maxZ: r.maxZ + p })
@@ -87,7 +92,9 @@ export const ZONES: Record<ZoneId, ZoneDef> = {
     spawn: SPAWN,
     portals: [{ rect: COURTYARD_DOOR, to: 'hall', spawn: { x: 0, z: 7.4, heading: Math.PI }, tapArea: HALL_TAP_AREA }],
     cameraBounds: null,
-    camera: { distance: 10, min: 5, max: 20 },
+    // yaw 0：鏡頭在 +z（庭院）一側看向主殿；出殿時若鏡頭放在角色背後，會卡在角色與主殿之間被建築擋住
+    camera: { distance: 10, min: 5, max: 20, yaw: 0 },
+    restoreCamera: true,
   },
   hall: {
     id: 'hall',
@@ -102,10 +109,29 @@ export const ZONES: Record<ZoneId, ZoneDef> = {
     portals: [{ rect: HALL_DOOR, to: 'courtyard', spawn: { x: 0, z: -4.6, heading: 0 } }],
     cameraBounds: { minX: -7.6, maxX: 7.6, minZ: -8.6, maxZ: 8.7, maxY: 6.4 },
     camera: { distance: 7, min: 3.5, max: 9 },
+    restoreCamera: false,
   },
 }
 
 const inside = (r: Rect, x: number, z: number) => x >= r.minX && x <= r.maxX && z >= r.minZ && z <= r.maxZ
+
+export interface CameraPose {
+  yaw: number
+  pitch: number
+  distance: number
+}
+
+/**
+ * 進入場景時的鏡頭：可還原的場景若有離開前的紀錄就原樣還原（距離限制在該場景範圍內），
+ * 否則用場景的預設水平角度，沒有預設就放在角色背後。
+ */
+export function entryCamera(zone: ZoneId, pose: Pose, saved: CameraPose | undefined, currentPitch: number): CameraPose {
+  const def = ZONES[zone]
+  if (def.restoreCamera && saved) {
+    return { ...saved, distance: Math.min(def.camera.max, Math.max(def.camera.min, saved.distance)) }
+  }
+  return { yaw: def.camera.yaw ?? pose.heading + Math.PI, pitch: currentPitch, distance: def.camera.distance }
+}
 
 /** 出入口範圍中最靠近可走區的點（玩家走向這裡即可觸發）。 */
 export function portalApproach(p: Portal): { x: number; z: number } {

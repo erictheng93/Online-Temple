@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { resolveCollisions, stepMover, type MoveConfig } from './movement'
-import { HALL_STATUES, ZONES, ZONE_IDS, isZoneId, portalApproach, portalAt, portalForTap } from './zones'
+import { HALL } from './layout'
+import { HALL_STATUES, ZONES, ZONE_IDS, entryCamera, isZoneId, portalApproach, portalAt, portalForTap } from './zones'
 
 const cfgFor = (id: keyof typeof ZONES): MoveConfig => ({ speed: 3.2, bounds: ZONES[id].bounds, obstacles: ZONES[id].obstacles })
 
@@ -43,6 +44,30 @@ describe('zones', () => {
     expect(portalAt('courtyard', approach.x, approach.z)?.to).toBe('hall')
     expect(portalForTap('courtyard', 0.6, -63.7)?.to).toBe('hall') // 實測：點屋頂時射線落在很遠的後方
     expect(portalForTap('courtyard', 0, 5)).toBeNull()
+  })
+
+  it('出殿：還原進殿前的庭院鏡頭（距離限制在庭院範圍內）', () => {
+    const exit = ZONES.hall.portals[0]!.spawn
+    const saved = { yaw: 0.3, pitch: 0.5, distance: 99 }
+    expect(entryCamera('courtyard', exit, saved, 0.4)).toEqual({ yaw: 0.3, pitch: 0.5, distance: ZONES.courtyard.camera.max })
+  })
+
+  it('出殿且沒有紀錄時，鏡頭在庭院一側看向主殿，不會被主殿擋住', () => {
+    const exit = ZONES.hall.portals[0]!.spawn // 角色面朝庭院（heading 0）站在殿門前
+    const { yaw, pitch, distance } = entryCamera('courtyard', exit, undefined, 0.4)
+    const camZ = exit.z + Math.cos(yaw) * Math.cos(pitch) * distance
+    expect(camZ).toBeGreaterThan(exit.z) // 鏡頭在庭院一側
+    // 舊做法（鏡頭放在角色背後）會讓鏡頭落進主殿建築裡
+    const oldCamZ = exit.z + Math.cos(exit.heading + Math.PI) * Math.cos(pitch) * distance
+    expect(oldCamZ).toBeGreaterThan(HALL.minZ)
+    expect(oldCamZ).toBeLessThan(HALL.maxZ)
+  })
+
+  it('進殿：一律放在角色背後看向神龕，不還原', () => {
+    const enter = ZONES.courtyard.portals[0]!.spawn
+    const cam = entryCamera('hall', enter, { yaw: 1, pitch: 1, distance: 1 }, 0.4)
+    expect(cam.yaw).toBeCloseTo(enter.heading + Math.PI)
+    expect(cam.distance).toBe(ZONES.hall.camera.distance)
   })
 
   it('isZoneId 只接受已知場景', () => {
