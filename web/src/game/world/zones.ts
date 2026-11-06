@@ -98,7 +98,7 @@ export const ZONES: Record<ZoneId, ZoneDef> = {
   },
   hall: {
     id: 'hall',
-    name: '傑群養心殿',
+    name: '大雄寶殿',
     bounds: { minX: -7.4, maxX: 7.4, minZ: -5.2, maxZ: 8.6 },
     obstacles: [
       HALL_ALTAR,

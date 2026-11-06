@@ -3,7 +3,7 @@ import { BELL_PAVILION, CENSER, HALL, LANTERNS, TREES } from '../world/layout'
 import type { ResourceTracker } from './ResourceTracker'
 
 export const SKY_COLOR = '#cdd4d8'
-export const TEMPLE_NAME = '傑群養心殿'
+export const TEMPLE_NAME = '大雄寶殿'
 
 const PALETTE = {
   grass: '#74805f',
