@@ -55,7 +55,7 @@ npm run check:ambient -- <音樂網址> <遊戲來源>  # 檢查 R2 上音樂檔
 
 ### 音訊
 
-- 環境音樂（佛樂＋風聲）不在執行時合成：`tools/ambient/score.ts` 是樂譜，`render.ts` 用 `node-web-audio-api` 離線算出可無縫循環的 MP3，正式環境放在 R2，以 HTMLMediaElement 串流後接入 Web Audio。R2 必須允許遊戲網域的 CORS，否則輸出靜音。
+- 環境音樂（佛樂＋風聲）不在執行時合成：`tools/ambient/score.ts` 是樂譜，`render.ts` 用 `node-web-audio-api` 離線算出可無縫循環的 MP3，正式環境放在 R2，以 HTMLMediaElement（`crossOrigin="anonymous"`）串流後接入 Web Audio。R2 未允許遊戲網域的 CORS 時瀏覽器拒絕載入，遊戲顯示「背景音樂無法載入」提示，只剩鳥叫與音效。部署或更換音樂檔時必須照 docs/TECH_STACK.md「部署檢查」執行 `npm run check:ambient` 並用手機實聽（使用者要求特別留意）。
 - 短音效（鐘、木魚、頌缽、鳥叫）由 `AudioManager` 即時合成為 AudioBuffer。
 - 靜音或音量為 0 時淡出後暫停 AudioContext 與音樂檔；背景時同靜音。
 
