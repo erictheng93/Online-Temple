@@ -126,6 +126,8 @@ export class AudioManager {
   private hidden = false
   /** 每次狀態變更遞增；延遲中的暫停若遇到新變更就取消。 */
   private stateToken = 0
+  /** 室內：鳥叫變小、像是從殿外傳來。 */
+  private indoor = false
   /** 環境音樂檔載入失敗時呼叫（例如網址錯誤或 R2 未開 CORS）。 */
   onAmbientError: ((url: string) => void) | null = null
 
@@ -252,6 +254,10 @@ export class AudioManager {
     }
   }
 
+  setIndoor(indoor: boolean): void {
+    this.indoor = indoor
+  }
+
   /** 進入背景：淡出後暫停 AudioContext。 */
   async suspend(): Promise<void> {
     this.hidden = true
@@ -333,7 +339,7 @@ export class AudioManager {
     src.buffer = buffer
     src.playbackRate.value = 0.9 + Math.random() * 0.2
     const gain = ctx.createGain()
-    gain.gain.value = 0.05 + Math.random() * 0.1
+    gain.gain.value = (0.05 + Math.random() * 0.1) * (this.indoor ? 0.3 : 1)
     const nodes: AudioNode[] = [src, gain]
     let tail: AudioNode = src.connect(gain)
     if (typeof ctx.createStereoPanner === 'function') {

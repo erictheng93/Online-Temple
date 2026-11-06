@@ -128,6 +128,17 @@ export class NetworkClient {
     })
   }
 
+  /**
+   * 切換場景（需送達，但可被更新的場景取代）。離線模式忽略。
+   * 斷線期間會留在佇列，重連後的 hello 之後送出；伺服器以 resumeToken 恢復時也會帶回場景。
+   */
+  sendZone(zone: string, x: number, z: number, heading: number): void {
+    if (!this.enabled) return
+    const msg = { t: 'zone' as const, zone, x, z, heading }
+    if (this.status === 'online' && this.sendNow(msg)) return
+    this.queue.push(msg)
+  }
+
   /** 進入背景：停止送位置、清掉過期位置；連線保留以免回前景時重新加入。 */
   setBackground(background: boolean): void {
     this.background = background
@@ -172,6 +183,8 @@ export class NetworkClient {
     switch (msg.t) {
       case 'welcome':
         this.resumeToken = msg.resumeToken
+        // 伺服器快照是權威狀態：斷線期間累積的位置與場景訊息已過時。
+        this.queue.clear()
         break
       case 'ack': {
         const p = this.pending.get(msg.reqId)

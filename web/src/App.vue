@@ -41,6 +41,8 @@ onMounted(() => {
       onToast: toast,
     })
     core.start()
+    // 開發模式除錯用：瀏覽器主控台可用 window.__game 檢查狀態（正式建置會移除）。
+    if (import.meta.env.DEV) (window as unknown as { __game: GameCore }).__game = core
   } catch (err) {
     console.error(err)
     fatal.value = '此裝置或瀏覽器無法啟用 WebGL，請更新瀏覽器或改用其他裝置。'
@@ -81,6 +83,8 @@ function toggleMute() {
 <template>
   <main class="stage">
     <canvas ref="canvas" class="scene" aria-label="寺院場景，點擊地面移動，拖曳旋轉視角" tabindex="0" />
+    <!-- 場景切換黑幕；淡出時間需與 GameCore 的 FADE_MS 一致 -->
+    <div class="fade" :class="{ on: ui?.fading }" aria-hidden="true" />
 
     <template v-if="entered && ui">
       <TopBar
@@ -126,6 +130,19 @@ function toggleMute() {
   height: 100%;
   touch-action: none;
   outline: none;
+}
+
+.fade {
+  position: absolute;
+  inset: 0;
+  background: #0b0806;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.4s ease;
+}
+
+.fade.on {
+  opacity: 1;
 }
 
 .notice {

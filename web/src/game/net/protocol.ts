@@ -22,6 +22,8 @@ export interface PlayerSnapshot {
   heading: number
   /** 玩家目前正在進行的動作，沒有則省略。 */
   action?: { id: string; startedAt: number }
+  /** 所在場景（'courtyard'、'hall'…）；省略時視為 'courtyard'。 */
+  zone?: string
 }
 
 /** 批次位置的單筆：[id, x, z, heading, moving]，moving 為 0 或 1。座標建議四捨五入到 0.01 公尺。 */
@@ -35,6 +37,8 @@ export type ClientMessage =
   | { t: 'move'; x: number; z: number; heading: number; seq: number }
   | { t: 'stop'; x: number; z: number; heading: number; seq: number }
   | { t: 'action'; reqId: string; id: string; data?: Record<string, unknown> }
+  /** 切換場景：x/z/heading 為進入新場景後的位置（出入口的 spawn）。伺服器應驗證玩家確實站在出入口。 */
+  | { t: 'zone'; zone: string; x: number; z: number; heading: number }
   | { t: 'ping'; ts: number }
 
 export type ServerMessage =
@@ -53,6 +57,8 @@ export type ServerMessage =
   | { t: 'moves'; m: MoveTuple[] }
   | { t: 'action'; playerId: string; id: string; startedAt: number; data?: Record<string, unknown> }
   | { t: 'ack'; reqId: string; ok: boolean; reason?: string }
+  /** 某玩家切換場景。 */
+  | { t: 'zone'; id: string; zone: string; x: number; z: number; heading: number }
   | { t: 'pong'; ts: number; serverTime: number }
   | { t: 'error'; code: string; message: string }
 
@@ -68,6 +74,7 @@ const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFin
 function isPlayer(v: unknown): v is PlayerSnapshot {
   if (!isObj(v)) return false
   if (!isStr(v.id) || !isStr(v.name) || !isNum(v.x) || !isNum(v.z) || !isNum(v.heading)) return false
+  if (v.zone !== undefined && !isStr(v.zone)) return false
   if (v.action === undefined) return true
   return isObj(v.action) && isStr(v.action.id) && isNum(v.action.startedAt)
 }
@@ -126,6 +133,8 @@ export function decode(raw: unknown): ServerMessage | null {
       return isStr(m.reqId) && typeof m.ok === 'boolean' && (m.reason === undefined || isStr(m.reason))
         ? (m as ServerMessage)
         : null
+    case 'zone':
+      return isStr(m.id) && isStr(m.zone) && isNum(m.x) && isNum(m.z) && isNum(m.heading) ? (m as ServerMessage) : null
     case 'pong':
       return isNum(m.ts) && isNum(m.serverTime) ? (m as ServerMessage) : null
     case 'error':

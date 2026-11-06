@@ -8,6 +8,13 @@ import { WebSocketServer } from 'ws'
 const BOTS = Number(process.argv[2] ?? 6)
 const PORT = Number(process.argv[3] ?? 8080)
 const ACTIONS = ['bow', 'bowl', 'bell']
+const ZONES = ['courtyard', 'hall']
+// 機器人隨機走動的範圍（未避開障礙物，僅供測試）
+const ROAM = {
+  courtyard: { x: [-12, 12], z: [-3, 11] },
+  hall: { x: [-6, 6], z: [-2.5, 7.5] },
+}
+const pick = ([a, b]) => a + Math.random() * (b - a)
 const NAMES = ['靜心', '晨鐘', '松風', '雲水', '明月', '竹影', '清泉', '山嵐']
 
 const wss = new WebSocketServer({ port: PORT, path: '/ws', maxPayload: 16 * 1024 })
@@ -23,17 +30,19 @@ const send = (ws, msg) => ws.readyState === 1 && ws.send(JSON.stringify(msg))
 const broadcast = (msg, exceptId) => {
   for (const p of players.values()) if (p.ws && p.id !== exceptId) send(p.ws, msg)
 }
-const snapshot = (p) => ({ id: p.id, name: p.name, x: p.x, z: p.z, heading: p.heading })
+const snapshot = (p) => ({ id: p.id, name: p.name, x: p.x, z: p.z, heading: p.heading, zone: p.zone })
 
 // 機器人：在廣場上隨機走動，偶爾做動作。
 for (let i = 0; i < BOTS; i++) {
   const id = `bot-${i}`
+  const zone = i % 3 === 2 ? 'hall' : 'courtyard'
   players.set(id, {
     id,
     name: NAMES[i % NAMES.length] + (i >= NAMES.length ? i : ''),
-    x: (Math.random() - 0.5) * 20,
-    z: Math.random() * 12 - 2,
+    x: pick(ROAM[zone].x),
+    z: pick(ROAM[zone].z),
     heading: 0,
+    zone,
     bot: { tx: 0, tz: 0, wait: Math.random() * 3 },
   })
 }
@@ -46,8 +55,8 @@ setInterval(() => {
     if (b.wait > 0) {
       b.wait -= dt
       if (b.wait <= 0) {
-        b.tx = (Math.random() - 0.5) * 24
-        b.tz = Math.random() * 14 - 3
+        b.tx = pick(ROAM[p.zone].x)
+        b.tz = pick(ROAM[p.zone].z)
       }
       continue
     }
@@ -87,7 +96,7 @@ wss.on('connection', (ws) => {
     }
     if (m.t === 'hello') {
       const id = `p-${nextId++}`
-      me = { id, name: String(m.name || '訪客').slice(0, 16), x: (Math.random() - 0.5) * 4, z: 11, heading: Math.PI, ws }
+      me = { id, name: String(m.name || '訪客').slice(0, 16), x: (Math.random() - 0.5) * 4, z: 11, heading: Math.PI, zone: 'courtyard', ws }
       players.set(id, me)
       send(ws, {
         t: 'welcome',
@@ -106,6 +115,13 @@ wss.on('connection', (ws) => {
       case 'stop':
         Object.assign(me, { x: m.x, z: m.z, heading: m.heading })
         queueMove(me, m.t === 'move')
+        break
+      case 'zone':
+        // 正式伺服器應驗證玩家確實站在出入口，並以伺服器端的落點為準。
+        if (!ZONES.includes(m.zone)) return
+        Object.assign(me, { zone: m.zone, x: m.x, z: m.z, heading: m.heading })
+        pendingMoves.delete(me.id)
+        broadcast({ t: 'zone', id: me.id, zone: m.zone, x: m.x, z: m.z, heading: m.heading }, me.id)
         break
       case 'action': {
         const cached = seenReq.get(m.reqId)

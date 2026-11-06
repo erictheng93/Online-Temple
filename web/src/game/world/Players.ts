@@ -17,6 +17,7 @@ export interface RemotePlayer {
   tz: number
   theading: number
   serverMoving: boolean
+  zone: string
 }
 
 export interface LocalPlayer {
@@ -45,6 +46,8 @@ export class Players {
   readonly remotes = new Map<string, RemotePlayer>()
   private factory: AvatarFactory
   private cullTimer = 0
+  /** 本機玩家所在場景；只顯示同場景的遠端玩家。 */
+  localZone = 'courtyard'
 
   constructor(
     private readonly parent: THREE.Object3D,
@@ -73,6 +76,7 @@ export class Players {
       existing.tx = p.x
       existing.tz = p.z
       existing.theading = p.heading
+      existing.zone = p.zone ?? 'courtyard'
       return existing
     }
     const avatar = this.factory.create({ name: p.name, colorIndex: colorIndexFor(p.id), local: false })
@@ -89,6 +93,7 @@ export class Players {
       tz: p.z,
       theading: p.heading,
       serverMoving: false,
+      zone: p.zone ?? 'courtyard',
     }
     this.remotes.set(p.id, r)
     this.cullTimer = CULL_INTERVAL_S // 下一幀重新計算可見性
@@ -114,6 +119,24 @@ export class Players {
     r.tz = z
     r.theading = heading
     r.serverMoving = moving
+  }
+
+  /** 遠端玩家切換場景：直接移到新位置，不做插值。 */
+  setRemoteZone(id: string, zone: string, x: number, z: number, heading: number): void {
+    const r = this.remotes.get(id)
+    if (!r) return
+    r.zone = zone
+    r.x = r.tx = x
+    r.z = r.tz = z
+    r.heading = r.theading = heading
+    r.serverMoving = false
+    this.cullTimer = CULL_INTERVAL_S
+  }
+
+  /** 本機玩家切換場景後立即重新計算可見性。 */
+  setLocalZone(zone: string): void {
+    this.localZone = zone
+    this.cull()
   }
 
   syncLocalTransform(): void {
@@ -163,7 +186,11 @@ export class Players {
   /** 依距離決定哪些遠端玩家要畫出來、哪些要顯示名牌。 */
   private cull(): void {
     const { x, z } = this.local.mover
-    const list = [...this.remotes.values()]
+    const list: RemotePlayer[] = []
+    for (const r of this.remotes.values()) {
+      if (r.zone === this.localZone) list.push(r)
+      else r.avatar.root.visible = false
+    }
     if (list.length > this.maxVisible || list.length > LABEL_LIMIT) {
       list.sort((a, b) => (a.x - x) ** 2 + (a.z - z) ** 2 - ((b.x - x) ** 2 + (b.z - z) ** 2))
     }

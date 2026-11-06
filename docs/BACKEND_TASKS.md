@@ -11,6 +11,7 @@
 - 協定以前端 [`web/src/game/net/protocol.ts`](../web/src/game/net/protocol.ts) 為準；伺服器行為參考 [`web/scripts/mock-server.mjs`](../web/scripts/mock-server.mjs)。要改協定時先提出，前端與後端同一個 PR 修改。
 - 時間：`serverTime`、`startedAt` 一律為 Unix epoch 毫秒；`pong.ts` 原樣回傳客戶端送來的值。
 - 單一房間上限 **50 人**，以設定值 `ROOM_CAPACITY` 提供，預設 50。
+- 場景（zone）：每位玩家屬於一個場景（目前 `courtyard`、`hall`），定義與出入口範圍見 [`web/src/game/world/zones.ts`](../web/src/game/world/zones.ts)。同房間的玩家在不同場景時互相看不到。
 - 每個 PR 必須通過：`cargo fmt --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test`。
 - 不使用 `unwrap()`／`expect()` 處理來自網路的資料；客戶端輸入一律視為不可信。
 - 禁止所有玩家共用一把全域 `Mutex`（AGENTS.md）。
@@ -88,7 +89,7 @@
 - 加入：回 `welcome`（含 `selfId`、`room`、`resumeToken`、`serverTime`、全房快照），並對其他人廣播 `join`。
 - 離開或斷線：廣播 `leave`（T6 完成後改為寬限期結束才廣播）。
 - 玩家 ID 由伺服器產生，不可由客戶端指定。
-- 出生點：`x ∈ [-2, 2]`、`z = 11`、`heading = π`（與前端 `SPAWN` 一致）。
+- 出生點：`x ∈ [-2, 2]`、`z = 11`、`heading = π`、`zone = "courtyard"`（與前端 `SPAWN` 一致）。快照的每位玩家都要帶 `zone`。
 
 驗收標準：
 1. 整合測試（以 `tokio-tungstenite` 或同等客戶端）：51 個連線加入後，前 50 人在房間 A、第 51 人在新房間 B；各自的 `welcome.players` 長度正確。
@@ -109,10 +110,12 @@
 - 速率限制（每連線 token bucket）：`move`／`stop` 每秒最多 15 則，`action` 每秒最多 2 則，全部訊息每秒最多 30 則。超出的訊息丟棄並計數；連續 5 秒超出則關閉（1008）。
 - 動作：`id` 必須在伺服器的允許清單內（目前為示範用的 `bow`、`bowl`、`bell`，以設定檔或常數提供）。回 `ack { reqId, ok, reason? }`。同一連線最近 64 個 `reqId` 的結果需快取，重送時回同一個 ack、不重複廣播。成功時對同房其他人廣播 `action { playerId, id, startedAt }`。
 - `data` 欄位暫時只接受空物件或省略，其他一律 `ok: false, reason: "unsupported_data"`。
+- 場景切換 `zone`：`zone` 必須是已知場景，且玩家最後被接受的位置在目前場景某個出入口範圍內（容許 0.5 公尺誤差），目標場景必須等於該出入口的 `to`。通過後位置改為伺服器端的出入口落點（不採用客戶端送來的座標），對同房所有人廣播 `zone { id, zone, x, z, heading }`。不通過時回 `error`（code `invalid_zone`）並維持原場景。各場景的位置驗證改用該場景的邊界。
 
 驗收標準：
 1. 測試：越界座標被夾回；一次跳 10 公尺被拒；每秒 30 則 move 只有約 15 則生效。
 2. 測試：同一 `reqId` 送兩次，只廣播一次、兩次都收到相同的 ack。
+4. 測試：站在殿門出入口送 `zone: "hall"` 成功且位置變成殿內落點；站在庭院中央送則收到 `invalid_zone`。
 3. 測試：未知動作回 `ok: false`。
 
 交付證據：測試輸出。
@@ -125,6 +128,7 @@
 
 範圍：
 - 房間 tick 預設 10 Hz（設定值 `TICK_HZ`）。tick 內只送「本 tick 有變動」的玩家，合併成一則 `moves`；座標與 heading 四捨五入到 0.01。靜止的玩家完全不送。
+- 依場景過濾：`moves` 與 `action` 只送給同場景的玩家（`zone`、`join`、`leave` 送給同房所有人，讓客戶端維持名單）。
 - 停下時送一次 `moving: 0`，之後不再重送。
 - 每條連線的發送佇列有上限（預設 64 則）。佇列滿時：
   - `moves` 可丟棄（下一個 tick 會有更新的位置）。
@@ -133,6 +137,7 @@
 
 驗收標準：
 1. 測試：50 人房、只有 1 人移動時，其他人每 tick 最多收到 1 則 `moves` 且只含 1 筆。
+4. 測試：殿內玩家移動時，庭院玩家收不到該玩家的 `moves`。
 2. 測試：一個客戶端完全不讀取，房間內其他人的 tick 間隔不受影響（量測 10 秒內 tick 數），該客戶端最終被關閉且伺服器記憶體不持續成長。
 3. 停止移動後 1 秒內只收到一次 `moving: 0`。
 
