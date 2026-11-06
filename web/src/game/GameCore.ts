@@ -156,6 +156,7 @@ export class GameCore {
     this.net.events.on('rtt', (ms) => (this.rtt = ms))
 
     this.audio.setVolumes(this.volumes())
+    this.audio.onAmbientError = () => this.opts.onToast('背景音樂無法載入，目前只有環境音效')
     this.installGameplay()
     this.actions.subscribe(() => this.pushUi(true))
 

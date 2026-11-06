@@ -38,7 +38,13 @@ npm run render:ambient            # 輸出 public/audio/temple-ambient.mp3（約
 echo VITE_AMBIENT_URL=/audio/temple-ambient.mp3 >> .env.local
 ```
 
-正式環境把檔案上傳到 R2，`VITE_AMBIENT_URL` 設為 R2 自訂網域上的網址，並在 R2 設定允許遊戲網域的 CORS（否則會靜音）。
+正式環境把檔案上傳到 R2，`VITE_AMBIENT_URL` 設為 R2 自訂網域上的網址，並在 R2 設定允許遊戲網域的 CORS。上傳後執行：
+
+```bash
+npm run check:ambient -- https://<R2 自訂網域>/audio/temple-ambient-v1.mp3 https://<遊戲網站>
+```
+
+必須全部通過，並用手機實際聽一次。完整檢查清單見 [docs/TECH_STACK.md](docs/TECH_STACK.md#部署檢查每次上傳或更換音樂檔都要做)。
 
 環境變數見 `web/.env.example`。在遊戲設定中開啟「顯示效能資訊」，可查看 FPS、CPU 時間與 draw call。
 

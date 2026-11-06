@@ -159,6 +159,17 @@ Vue 管理選單、音量設定、房間資訊、個人計數與連線提示。�
 - 音樂檔放在 R2：與頁面不同網域時，R2 必須回應 `Access-Control-Allow-Origin`（允許遊戲網域），否則 `crossOrigin` 媒體接進 Web Audio 會輸出靜音。檔名含版本（例如 `temple-ambient-v1.mp3`）並設定長期快取，更新時換檔名。
 - 未設定 `VITE_AMBIENT_URL` 時只有鳥叫、頌缽與動作音效。
 
+#### 部署檢查（每次上傳或更換音樂檔都要做）
+
+少了任何一項，玩家只會聽到鳥叫與偶爾的頌缽，伺服器與建置都不會報錯。
+
+1. 建置時設定 `VITE_AMBIENT_URL` 為 R2 自訂網域上的檔案網址。未設定時，`vite build` 會印出「未設定 VITE_AMBIENT_URL」警告；CI 輸出出現這行代表這次建置沒有佛樂。
+2. R2 bucket 的 CORS 允許遊戲網域（`AllowedOrigins` 填遊戲網站來源、`AllowedMethods` 含 `GET`、`HEAD`）。前端以 `crossOrigin="anonymous"` 載入，CORS 不通過時瀏覽器拒絕載入，遊戲會顯示「背景音樂無法載入」提示。
+3. 上傳後執行 `npm run check:ambient -- <音樂檔網址> <遊戲網站來源>`，必須全部通過：HTTP 200、音訊 Content-Type、CORS 允許遊戲來源、Range 回 206（iOS Safari 需要）；長期快取為建議項目。
+4. 用手機（至少一台 iPhone Safari）實際進場聽一次。
+
+已驗證（2026-11-06，本機）：檢查腳本對未開 CORS 且不支援 Range 的伺服器回報 2 項失敗、結束碼 1；對設定正確的伺服器全部通過、結束碼 0。前端對未開 CORS 的網址顯示載入失敗提示。
+
 ## 載入、渲染與音訊方向
 
 - 首次只載入基本場景、自己的角色與必要互動；其他玩家及非必要素材分批加入。

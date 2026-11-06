@@ -126,6 +126,8 @@ export class AudioManager {
   private hidden = false
   /** 每次狀態變更遞增；延遲中的暫停若遇到新變更就取消。 */
   private stateToken = 0
+  /** 環境音樂檔載入失敗時呼叫（例如網址錯誤或 R2 未開 CORS）。 */
+  onAmbientError: ((url: string) => void) | null = null
 
   get unlocked(): boolean {
     return this.ctx !== null
@@ -221,7 +223,15 @@ export class AudioManager {
       media.src = url
       media.loop = true
       media.preload = 'auto'
-      media.addEventListener('error', () => console.warn('環境音樂載入失敗：', url), { once: true })
+      // 設了 crossOrigin，R2 未回 CORS 標頭時瀏覽器會拒絕載入並觸發 error，而不是靜音播放。
+      media.addEventListener(
+        'error',
+        () => {
+          console.warn('環境音樂載入失敗（檢查網址與 R2 CORS）：', url, media.error)
+          this.onAmbientError?.(url)
+        },
+        { once: true },
+      )
       this.media = media
       this.mediaNode = ctx.createMediaElementSource(media)
       this.mediaNode.connect(this.musicBus)

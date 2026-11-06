@@ -13,7 +13,8 @@
     "typecheck": "vue-tsc -b",
     "test": "vitest run",
     "mock": "node scripts/mock-server.mjs",
-    "render:ambient": "node tools/ambient/render.ts"
+    "render:ambient": "node tools/ambient/render.ts",
+    "check:ambient": "node scripts/check-ambient.mjs"
   },
   "dependencies": {
     "three": "0.187.0",
