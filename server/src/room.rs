@@ -9,6 +9,9 @@ use tokio::{
 };
 
 const OUTBOUND_CAPACITY: usize = 64;
+/// 單一房間人數上限的上限。預設 50；放寬是為了日後依實測調整而不必改程式，
+/// 但仍設上限，避免誤設極大值讓單房廣播成本（人數平方）失控。
+pub const MAX_ROOM_CAPACITY: usize = 500;
 const ROOM_IDLE: Duration = Duration::from_secs(60);
 pub type Outbound = mpsc::Receiver<ServerMessage>;
 struct Player {
@@ -44,7 +47,7 @@ impl Membership {
 }
 impl Lobby {
     pub fn new(capacity: usize) -> Self {
-        assert!((1..=50).contains(&capacity));
+        assert!((1..=MAX_ROOM_CAPACITY).contains(&capacity));
         let (tx, mut rx) = mpsc::channel::<Admission>(128);
         tokio::spawn(async move {
             let mut rooms: Vec<mpsc::Sender<RoomCommand>> = Vec::new();

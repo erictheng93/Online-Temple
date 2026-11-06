@@ -3,6 +3,14 @@ use serde_json::{Map, Value};
 
 pub const MAX_MESSAGE_BYTES: usize = 16 * 1024;
 pub const PROTOCOL_VERSION: f64 = 1.0;
+/// 客戶端字串欄位上限（UTF-8 bytes）。超過時整則視為無效訊息。
+/// reqId 會被快取做去重（T4），沒有上限時每條連線最壞可佔約 1 MB。
+pub const MAX_REQ_ID_BYTES: usize = 128;
+pub const MAX_RESUME_TOKEN_BYTES: usize = 128;
+pub const MAX_ACTION_ID_BYTES: usize = 32;
+pub const MAX_ZONE_BYTES: usize = 32;
+/// 名稱原始字串上限；清理後仍只保留 16 個字元。
+pub const MAX_RAW_NAME_BYTES: usize = 256;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "t", rename_all = "camelCase", rename_all_fields = "camelCase")]
@@ -143,6 +151,28 @@ pub enum ServerMessage {
     },
 }
 
+impl ClientMessage {
+    /// 字串欄位是否在長度上限內（識別字不可為空）。
+    pub fn within_limits(&self) -> bool {
+        let id = |v: &str, max: usize| !v.is_empty() && v.len() <= max;
+        match self {
+            Self::Hello {
+                name, resume_token, ..
+            } => {
+                name.len() <= MAX_RAW_NAME_BYTES
+                    && resume_token
+                        .as_deref()
+                        .is_none_or(|t| id(t, MAX_RESUME_TOKEN_BYTES))
+            }
+            Self::Action {
+                req_id, id: action, ..
+            } => id(req_id, MAX_REQ_ID_BYTES) && id(action, MAX_ACTION_ID_BYTES),
+            Self::Zone { zone, .. } => id(zone, MAX_ZONE_BYTES),
+            Self::Move { .. } | Self::Stop { .. } | Self::Ping { .. } => true,
+        }
+    }
+}
+
 pub fn clean_name(name: &str) -> String {
     let filtered: String = name.chars().filter(|c| !c.is_control()).collect();
     let name: String = filtered.trim().chars().take(16).collect();
@@ -168,5 +198,42 @@ mod tests {
             assert_eq!(clean_name(input), expected);
         }
         assert_eq!(clean_name(&"😀".repeat(17)).chars().count(), 16);
+    }
+
+    #[test]
+    fn string_limits() {
+        let parse = |raw: String| serde_json::from_str::<ClientMessage>(&raw).unwrap();
+        let action = |req: usize, id: usize| {
+            parse(format!(
+                r#"{{"t":"action","reqId":"{}","id":"{}"}}"#,
+                "r".repeat(req),
+                "a".repeat(id)
+            ))
+        };
+        assert!(action(MAX_REQ_ID_BYTES, MAX_ACTION_ID_BYTES).within_limits());
+        assert!(!action(MAX_REQ_ID_BYTES + 1, 3).within_limits());
+        assert!(!action(15_000, 3).within_limits());
+        assert!(!action(8, MAX_ACTION_ID_BYTES + 1).within_limits());
+        assert!(!action(0, 3).within_limits());
+        let zone = |z: &str| {
+            parse(format!(
+                r#"{{"t":"zone","zone":"{z}","x":0,"z":0,"heading":0}}"#
+            ))
+        };
+        assert!(zone("hall").within_limits());
+        assert!(!zone(&"h".repeat(MAX_ZONE_BYTES + 1)).within_limits());
+        assert!(!zone("").within_limits());
+        let hello = |name: usize, token: Option<usize>| {
+            let token = token
+                .map(|n| format!(r#","resumeToken":"{}""#, "t".repeat(n)))
+                .unwrap_or_default();
+            parse(format!(
+                r#"{{"t":"hello","v":1,"name":"{}"{token}}}"#,
+                "n".repeat(name)
+            ))
+        };
+        assert!(hello(16, Some(MAX_RESUME_TOKEN_BYTES)).within_limits());
+        assert!(!hello(16, Some(MAX_RESUME_TOKEN_BYTES + 1)).within_limits());
+        assert!(!hello(MAX_RAW_NAME_BYTES + 1, None).within_limits());
     }
 }

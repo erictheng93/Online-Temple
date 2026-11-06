@@ -214,3 +214,121 @@ async fn fifty_one_players_split_and_leave_is_room_local() {
     assert_eq!(welcome["room"], room_a);
     assert_eq!(welcome["players"].as_array().unwrap().len(), 50);
 }
+
+// ---- 稽核後修正（zone、字串上限、閒置逾時、Origin 正規化） ----
+
+async fn server_with(options: temple_server::ServerOptions) -> Server {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("ws://{}/ws", listener.local_addr().unwrap());
+    let task = tokio::spawn(async move {
+        axum::serve(listener, temple_server::app_with_options(options))
+            .await
+            .unwrap();
+    });
+    Server { url, task }
+}
+
+async fn pong(ws: &mut Ws, ts: u32) {
+    text(ws, &format!(r#"{{"t":"ping","ts":{ts}}}"#)).await;
+    loop {
+        let msg = next(ws).await;
+        if let Message::Text(raw) = &msg
+            && raw.contains(r#""t":"pong""#)
+        {
+            return;
+        }
+        assert!(
+            !matches!(msg, Message::Close(_)),
+            "closed instead of pong: {msg:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn zone_messages_are_accepted_not_counted_invalid() {
+    let server = server().await;
+    let mut ws = connect(&server).await;
+    text(&mut ws, HELLO).await;
+    // 目前前端進出殿會送 zone；T2 時代會被當成無效訊息，第 21 則就斷線。
+    for _ in 0..25 {
+        text(
+            &mut ws,
+            r#"{"t":"zone","zone":"hall","x":0,"z":7.4,"heading":3.14}"#,
+        )
+        .await;
+    }
+    pong(&mut ws, 1).await;
+}
+
+#[tokio::test]
+async fn over_limit_strings_count_as_invalid() {
+    let server = server().await;
+    let mut ws = connect(&server).await;
+    text(&mut ws, HELLO).await;
+    let long = format!(
+        r#"{{"t":"action","reqId":"{}","id":"bow"}}"#,
+        "x".repeat(15_000)
+    );
+    for _ in 0..20 {
+        text(&mut ws, &long).await;
+    }
+    pong(&mut ws, 2).await; // 20 則仍在容許範圍
+    text(&mut ws, &long).await;
+    loop {
+        match next(&mut ws).await {
+            Message::Close(Some(frame)) => {
+                assert_eq!(u16::from(frame.code), 1008);
+                break;
+            }
+            Message::Text(_) => continue, // 房間的 join 等訊息
+            other => panic!("expected close, got {other:?}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn idle_timeout_closes_silent_connection_but_not_active_one() {
+    let server = server_with(temple_server::ServerOptions {
+        allowed_origins: vec!["http://localhost:5173".into()],
+        room_capacity: 50,
+        idle_timeout: Duration::from_millis(400),
+    })
+    .await;
+    let mut active = connect(&server).await;
+    text(&mut active, HELLO).await;
+    let mut silent = connect(&server).await;
+    text(&mut silent, HELLO).await;
+
+    let start = tokio::time::Instant::now();
+    // 活躍的連線每 150 ms 送一次心跳，持續超過逾時時間的兩倍
+    for i in 0..7 {
+        pong(&mut active, 10 + i).await;
+        tokio::time::sleep(Duration::from_millis(150)).await;
+    }
+    assert!(start.elapsed() > Duration::from_millis(800));
+    // 沉默的連線早已被關閉（之前可能先收到 active 的 join）
+    loop {
+        match next(&mut silent).await {
+            Message::Close(Some(frame)) => {
+                assert_eq!(u16::from(frame.code), 1001);
+                break;
+            }
+            Message::Text(_) => continue,
+            other => panic!("expected close, got {other:?}"),
+        }
+    }
+    pong(&mut active, 99).await;
+}
+
+#[tokio::test]
+async fn trailing_slash_origin_setting_still_accepts_browser_origin() {
+    let origin = temple_server::config::normalize_origin("http://localhost:5173/").unwrap();
+    let server = server_with(temple_server::ServerOptions {
+        allowed_origins: vec![origin],
+        room_capacity: 50,
+        idle_timeout: temple_server::DEFAULT_IDLE_TIMEOUT,
+    })
+    .await;
+    let mut ws = connect(&server).await; // 瀏覽器送的是沒有結尾斜線的 Origin
+    text(&mut ws, HELLO).await;
+}

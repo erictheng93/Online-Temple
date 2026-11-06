@@ -34,7 +34,7 @@ pub async fn upgrade(
         .read_buffer_size(4096)
         .write_buffer_size(0)
         .max_write_buffer_size(MAX_MESSAGE_BYTES * 2)
-        .on_upgrade(move |ws| session(ws, state.lobby)))
+        .on_upgrade(move |ws| session(ws, state.lobby, state.idle_timeout)))
 }
 async fn send(ws: &mut WebSocket, msg: Message) -> bool {
     matches!(
@@ -83,9 +83,9 @@ impl InvalidMessages {
         self.0.len() > 20
     }
 }
-async fn session(mut ws: WebSocket, lobby: crate::room::Lobby) {
+async fn session(mut ws: WebSocket, lobby: crate::room::Lobby, idle_timeout: Duration) {
     let mut membership = None;
-    session_inner(&mut ws, &lobby, &mut membership).await;
+    session_inner(&mut ws, &lobby, &mut membership, idle_timeout).await;
     if let Some(member) = membership {
         member.leave().await;
     }
@@ -94,8 +94,12 @@ async fn session_inner(
     ws: &mut WebSocket,
     lobby: &crate::room::Lobby,
     membership: &mut Option<crate::room::Membership>,
+    idle_timeout: Duration,
 ) {
     let deadline = Instant::now() + Duration::from_secs(5);
+    // 握手後最後一次收到任何資料（含控制幀）的時間；超過 idle_timeout 沒有任何輸入即關閉，
+    // 避免對方斷電／斷網而沒有關閉握手時，連線與房間名額永遠被佔用。
+    let mut last_inbound = Instant::now();
     let mut name = None;
     let mut invalid = InvalidMessages::default();
     loop {
@@ -113,6 +117,10 @@ async fn session_inner(
             };
             tokio::select! {
                 inbound = ws.recv() => inbound,
+                _ = tokio::time::sleep_until(last_inbound + idle_timeout) => {
+                    close(ws, 1001, "idle timeout").await;
+                    return;
+                }
                 outbound = member.outbound.recv() => {
                     match outbound {
                         Some(message) => { if !json(ws, message).await { return; } }
@@ -122,6 +130,7 @@ async fn session_inner(
                 }
             }
         };
+        last_inbound = Instant::now();
         let raw = match received {
             Some(Ok(Message::Text(raw))) => raw,
             Some(Ok(Message::Binary(_))) => {
@@ -145,9 +154,12 @@ async fn session_inner(
                 return;
             }
         };
-        let parsed = serde_json::from_str::<ClientMessage>(&raw);
+        // 格式錯誤或字串超過長度上限，都視為無效訊息
+        let parsed = serde_json::from_str::<ClientMessage>(&raw)
+            .ok()
+            .filter(ClientMessage::within_limits);
         match parsed {
-            Ok(ClientMessage::Hello {
+            Some(ClientMessage::Hello {
                 v, name: requested, ..
             }) if name.is_none() => {
                 if v != PROTOCOL_VERSION {
@@ -171,7 +183,7 @@ async fn session_inner(
                 name = Some(cleaned);
                 tracing::debug!("hello accepted");
             }
-            Ok(ClientMessage::Ping { ts }) if name.is_some() => {
+            Some(ClientMessage::Ping { ts }) if name.is_some() => {
                 let server_time = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap_or_default()
@@ -180,7 +192,7 @@ async fn session_inner(
                     return;
                 }
             }
-            Ok(
+            Some(
                 ClientMessage::Move { .. }
                 | ClientMessage::Stop { .. }
                 | ClientMessage::Action { .. }
