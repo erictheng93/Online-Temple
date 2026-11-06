@@ -4,7 +4,7 @@ use serde_json::{Map, Value};
 pub const MAX_MESSAGE_BYTES: usize = 16 * 1024;
 pub const PROTOCOL_VERSION: f64 = 1.0;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "t", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum ClientMessage {
     Hello {
@@ -31,19 +31,27 @@ pub enum ClientMessage {
         #[serde(skip_serializing_if = "Option::is_none")]
         data: Option<Map<String, Value>>,
     },
+    Zone {
+        zone: String,
+        x: f64,
+        z: f64,
+        heading: f64,
+    },
     Ping {
         ts: f64,
     },
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlayerAction {
     pub id: String,
     pub started_at: f64,
 }
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlayerSnapshot {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub zone: Option<String>,
     pub id: String,
     pub name: String,
     pub x: f64,
@@ -52,9 +60,9 @@ pub struct PlayerSnapshot {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub action: Option<PlayerAction>,
 }
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(try_from = "u8", into = "u8")]
-#[derive(Clone, Copy)]
+#[derive(Copy)]
 pub enum Moving {
     Stopped,
     Moving,
@@ -79,7 +87,7 @@ impl From<Moving> for u8 {
 }
 pub type MoveTuple = (String, f64, f64, f64, Moving);
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "t", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum ServerMessage {
     Welcome {
@@ -117,6 +125,13 @@ pub enum ServerMessage {
         ok: bool,
         #[serde(skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
+    },
+    Zone {
+        id: String,
+        zone: String,
+        x: f64,
+        z: f64,
+        heading: f64,
     },
     Pong {
         ts: f64,

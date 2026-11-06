@@ -11,13 +11,12 @@ use axum::{
 };
 use std::{
     collections::VecDeque,
-    sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::time::{Instant, timeout, timeout_at};
 
 pub async fn upgrade(
-    State(origins): State<Arc<Vec<String>>>,
+    State(state): State<crate::AppState>,
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Result<Response, StatusCode> {
@@ -26,7 +25,7 @@ pub async fn upgrade(
         .next()
         .and_then(|v| v.to_str().ok())
         .ok_or(StatusCode::FORBIDDEN)?;
-    if values.next().is_some() || !origins.iter().any(|v| v == origin) {
+    if values.next().is_some() || !state.origins.iter().any(|v| v == origin) {
         return Err(StatusCode::FORBIDDEN);
     }
     Ok(ws
@@ -35,7 +34,7 @@ pub async fn upgrade(
         .read_buffer_size(4096)
         .write_buffer_size(0)
         .max_write_buffer_size(MAX_MESSAGE_BYTES * 2)
-        .on_upgrade(session))
+        .on_upgrade(move |ws| session(ws, state.lobby)))
 }
 async fn send(ws: &mut WebSocket, msg: Message) -> bool {
     matches!(
@@ -84,7 +83,18 @@ impl InvalidMessages {
         self.0.len() > 20
     }
 }
-async fn session(mut ws: WebSocket) {
+async fn session(mut ws: WebSocket, lobby: crate::room::Lobby) {
+    let mut membership = None;
+    session_inner(&mut ws, &lobby, &mut membership).await;
+    if let Some(member) = membership {
+        member.leave().await;
+    }
+}
+async fn session_inner(
+    ws: &mut WebSocket,
+    lobby: &crate::room::Lobby,
+    membership: &mut Option<crate::room::Membership>,
+) {
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut name = None;
     let mut invalid = InvalidMessages::default();
@@ -93,17 +103,29 @@ async fn session(mut ws: WebSocket) {
             match timeout_at(deadline, ws.recv()).await {
                 Ok(value) => value,
                 Err(_) => {
-                    close(&mut ws, 1008, "hello timeout").await;
+                    close(ws, 1008, "hello timeout").await;
                     return;
                 }
             }
         } else {
-            ws.recv().await
+            let Some(member) = membership.as_mut() else {
+                return;
+            };
+            tokio::select! {
+                inbound = ws.recv() => inbound,
+                outbound = member.outbound.recv() => {
+                    match outbound {
+                        Some(message) => { if !json(ws, message).await { return; } }
+                        None => { close(ws, 1013, "room disconnected").await; return; }
+                    }
+                    continue;
+                }
+            }
         };
         let raw = match received {
             Some(Ok(Message::Text(raw))) => raw,
             Some(Ok(Message::Binary(_))) => {
-                close(&mut ws, 1003, "text messages required").await;
+                close(ws, 1003, "text messages required").await;
                 return;
             }
             Some(Ok(Message::Close(_))) | None => return,
@@ -119,7 +141,7 @@ async fn session(mut ws: WebSocket) {
                 } else {
                     1002
                 };
-                close(&mut ws, code, "invalid WebSocket frame").await;
+                close(ws, code, "invalid WebSocket frame").await;
                 return;
             }
         };
@@ -130,17 +152,23 @@ async fn session(mut ws: WebSocket) {
             }) if name.is_none() => {
                 if v != PROTOCOL_VERSION {
                     json(
-                        &mut ws,
+                        ws,
                         ServerMessage::Error {
                             code: "unsupported_version".into(),
                             message: "Protocol version 1 required".into(),
                         },
                     )
                     .await;
-                    close(&mut ws, 1008, "unsupported version").await;
+                    close(ws, 1008, "unsupported version").await;
                     return;
                 }
-                name = Some(clean_name(&requested));
+                let cleaned = clean_name(&requested);
+                *membership = lobby.join(cleaned.clone()).await;
+                if membership.is_none() {
+                    close(ws, 1013, "server busy").await;
+                    return;
+                }
+                name = Some(cleaned);
                 tracing::debug!("hello accepted");
             }
             Ok(ClientMessage::Ping { ts }) if name.is_some() => {
@@ -148,20 +176,21 @@ async fn session(mut ws: WebSocket) {
                     .duration_since(UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_millis() as f64;
-                if !json(&mut ws, ServerMessage::Pong { ts, server_time }).await {
+                if !json(ws, ServerMessage::Pong { ts, server_time }).await {
                     return;
                 }
             }
             Ok(
                 ClientMessage::Move { .. }
                 | ClientMessage::Stop { .. }
-                | ClientMessage::Action { .. },
+                | ClientMessage::Action { .. }
+                | ClientMessage::Zone { .. },
             ) if name.is_some() => {
                 // T3 connects this validated protocol boundary to room commands.
             }
             _ => {
                 if invalid.record(Instant::now()) {
-                    close(&mut ws, 1008, "too many invalid messages").await;
+                    close(ws, 1008, "too many invalid messages").await;
                     return;
                 }
             }

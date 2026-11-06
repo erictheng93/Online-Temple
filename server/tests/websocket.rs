@@ -35,6 +35,9 @@ async fn connect(server: &Server) -> Ws {
 }
 async fn text(ws: &mut Ws, raw: &str) {
     ws.send(Message::Text(raw.to_owned().into())).await.unwrap();
+    if raw == HELLO {
+        assert!(next(ws).await.to_text().unwrap().contains("welcome"));
+    }
 }
 async fn next(ws: &mut Ws) -> Message {
     timeout(Duration::from_secs(7), ws.next())
@@ -155,4 +158,59 @@ async fn exact_byte_limit_and_invalid_schema_do_not_break_session() {
     assert!(next(&mut ws).await.to_text().unwrap().contains("pong"));
     text(&mut ws, &"\u{1f600}".repeat(5000)).await;
     closed(&mut ws, 1009).await;
+}
+
+#[tokio::test]
+async fn fifty_one_players_split_and_leave_is_room_local() {
+    let server = server().await;
+    let mut clients = Vec::new();
+    let mut ids = std::collections::HashSet::new();
+    let mut room_a = String::new();
+    for i in 0..51 {
+        let mut ws = connect(&server).await;
+        ws.send(Message::Text(HELLO.into())).await.unwrap();
+        let welcome: serde_json::Value =
+            serde_json::from_str(next(&mut ws).await.to_text().unwrap()).unwrap();
+        assert_eq!(welcome["t"], "welcome");
+        assert_eq!(
+            welcome["players"].as_array().unwrap().len(),
+            if i < 50 { i + 1 } else { 1 }
+        );
+        if i == 0 {
+            room_a = welcome["room"].as_str().unwrap().into();
+        }
+        assert_eq!(welcome["room"] == room_a, i < 50);
+        assert!(ids.insert(welcome["selfId"].as_str().unwrap().to_owned()));
+        for p in welcome["players"].as_array().unwrap() {
+            assert_eq!(p["zone"], "courtyard");
+            assert_eq!(p["z"], 11.0);
+            assert!((-2.0..=2.0).contains(&p["x"].as_f64().unwrap()));
+            assert_eq!(p["heading"], std::f64::consts::PI);
+        }
+        // Drain joins so the test measures room separation rather than receiver backlog.
+        if i < 50 {
+            for previous in &mut clients {
+                assert!(next(previous).await.to_text().unwrap().contains("join"));
+            }
+        }
+        clients.push(ws);
+    }
+    let leaving = clients.remove(0);
+    drop(leaving);
+    for client in &mut clients[..49] {
+        let event: serde_json::Value =
+            serde_json::from_str(next(client).await.to_text().unwrap()).unwrap();
+        assert_eq!(event["t"], "leave");
+    }
+    assert!(
+        timeout(Duration::from_millis(250), clients[49].next())
+            .await
+            .is_err()
+    );
+    let mut replacement = connect(&server).await;
+    replacement.send(Message::Text(HELLO.into())).await.unwrap();
+    let welcome: serde_json::Value =
+        serde_json::from_str(next(&mut replacement).await.to_text().unwrap()).unwrap();
+    assert_eq!(welcome["room"], room_a);
+    assert_eq!(welcome["players"].as_array().unwrap().len(), 50);
 }

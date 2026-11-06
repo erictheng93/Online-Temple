@@ -12,7 +12,8 @@
           "name": "n",
           "x": 0,
           "z": 0,
-          "heading": 0
+          "heading": 0,
+          "zone": "courtyard"
         }
       ]
     },
@@ -96,6 +97,14 @@
       "t": "error",
       "code": "unsupported_version",
       "message": "Protocol version 1 required"
+    },
+    {
+      "t": "zone",
+      "id": "a",
+      "zone": "hall",
+      "x": 0,
+      "z": 0,
+      "heading": 0
     }
   ],
   "client": [
@@ -140,6 +149,13 @@
     {
       "t": "ping",
       "ts": 123.25
+    },
+    {
+      "t": "zone",
+      "zone": "hall",
+      "x": 0,
+      "z": 0,
+      "heading": 0
     }
   ]
 }
