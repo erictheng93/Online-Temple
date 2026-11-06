@@ -19,7 +19,7 @@ describe('zones', () => {
 
   it('從庭院出生點直走向殿門會進入殿內出入口；殿內走回門口會觸發回庭院', () => {
     for (const [id, target] of [['courtyard', { x: 0, z: -20 }], ['hall', { x: 0, z: 20 }]] as const) {
-      const from = id === 'courtyard' ? { x: 0, z: -4.6 } : ZONES.hall.spawn
+      const from = id === 'courtyard' ? ZONES.hall.portals[0]!.spawn : ZONES.hall.spawn
       const s = { x: from.x, z: from.z, heading: 0, target }
       let hit = null
       for (let i = 0; i < 200 && !hit; i++) {
@@ -68,6 +68,12 @@ describe('zones', () => {
     const cam = entryCamera('hall', enter, { yaw: 1, pitch: 1, distance: 1 }, 0.4)
     expect(cam.yaw).toBeCloseTo(enter.heading + Math.PI)
     expect(cam.distance).toBe(ZONES.hall.camera.distance)
+  })
+
+  it('出殿落點與殿門入口保持至少 1 公尺緩衝，避免立刻再次進殿', () => {
+    const exit = ZONES.hall.portals[0]!.spawn
+    const door = ZONES.courtyard.portals[0]!.rect
+    expect(exit.z - door.maxZ).toBeGreaterThanOrEqual(1)
   })
 
   it('isZoneId 只接受已知場景', () => {

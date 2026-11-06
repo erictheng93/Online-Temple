@@ -106,7 +106,8 @@ export const ZONES: Record<ZoneId, ZoneDef> = {
       ...HALL_PILLARS.map((p) => square(p.x, p.z, 0.32)),
     ].map((r) => pad(r, PLAYER_RADIUS)),
     spawn: { x: 0, z: 7.4, heading: Math.PI },
-    portals: [{ rect: HALL_DOOR, to: 'courtyard', spawn: { x: 0, z: -4.6, heading: 0 } }],
+    // 出殿落點離殿門入口（maxZ -5.0）約 1.4 公尺，避免一出殿又往前走就立刻再次進殿；仍在香爐（z ≥ -2.75）前方
+    portals: [{ rect: HALL_DOOR, to: 'courtyard', spawn: { x: 0, z: -3.6, heading: 0 } }],
     cameraBounds: { minX: -7.6, maxX: 7.6, minZ: -8.6, maxZ: 8.7, maxY: 6.4 },
     camera: { distance: 7, min: 3.5, max: 9 },
     restoreCamera: false,
